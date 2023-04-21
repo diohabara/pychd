@@ -1,5 +1,8 @@
 # pychd
 
+[![CI](https://github.com/diohabara/pychd/actions/workflows/ci.yml/badge.svg)](https://github.com/diohabara/pychd/actions/workflows/ci.yml)
+[![PyPI Version](https://img.shields.io/pypi/v/pychd.svg)](https://pypi.python.org/pypi/pychd)
+
 The ChatGPT-powered decompiler for Python, providing superior code analysis capabilities
 
 ## Usage
