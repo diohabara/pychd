@@ -3,10 +3,10 @@ authors = ["卍diohabara卍 <diohabara@gmail.com>"]
 description = "The ChatGPT-powered Python decompiler provided superior code analysis capabilities"
 keywords = ["decompiler", "python", "poetry", "bytecode"]
 license = "MIT"
-name = "pcd"
-packages = [{include = "src/pcd"}]
+name = "pychd"
+packages = [{include = "src/pychd"}]
 readme = "README.md"
-repository = "https://github.com/diohabara/pcd"
+repository = "https://github.com/diohabara/pychd"
 version = "0.1.0"
 
 [tool.poetry.dependencies]
@@ -30,4 +30,4 @@ build-backend = "poetry.core.masonry.api"
 requires = ["poetry-core"]
 
 [tool.poetry.scripts]
-pcd = "src.pcd.main:cli"
+pychd = "src.pychd.main:cli"
