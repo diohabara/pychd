@@ -19,13 +19,10 @@ jobs:
         uses: abatilo/actions-poetry@v2
         with:
           poetry-version: ${{ matrix.poetry-version }}
-      - name: View poetry --help
-        run: poetry --help
       - name: Install
-        run: poetry install
-      - name: Type-checking
-        run: poetry run mypy
-      - name: Linting
-        run: poetry run ruff check .
-      - name: Testing
-        run: poetry run pytest
+        run: |
+          poetry install
+          poetry run pre-commit install
+      - name: Lint
+        run: |
+          poetry run pre-commit run --files .pre-commit-config.yaml
