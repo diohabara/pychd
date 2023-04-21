@@ -56,7 +56,7 @@ def decompile_disassembled_pyc(disassembled_pyc: str) -> str:
         Decompile it into the original source code.
         Output only the original full source code.
         Do not the natural language description.
-        Do not surround the code with triple quotes.
+        Do not surround the code with triple quotes such as '```' or '```python'.
         ```
         {disassembled_pyc}
         ```
