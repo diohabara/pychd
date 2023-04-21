@@ -31,13 +31,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def setup() -> None:
-    logging_config = Path(__file__).parent / "logging.conf"
-    fileConfig(logging_config)
+def setup(logging_path: Path) -> None:
+    fileConfig(logging_path)
 
 
 def cli() -> None:
-    setup()
+    logging_config = Path(__file__).parent / "logging.conf"
+    if logging_config.exists():
+        setup(logging_config)
     args = parse_args()
     logging.info(args)
     if args.command == "compile":
