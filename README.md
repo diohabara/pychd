@@ -257,26 +257,18 @@ for i in range(3):
 original
 
 ```python
-# Using a for loop to iterate through a list
-fruits = ["apple", "banana", "orange", "grape"]
-for fruit in fruits:
-    print(f"Current fruit: {fruit}")
+# Basic list comprehension
+squares = [x**2 for x in range(1, 6)]
+print(squares)  # Output: [1, 4, 9, 16, 25]
 
-# Using a for loop with the range function
-for i in range(5):
-    print(f"Current value of i: {i}")
+# List comprehension with a condition
+even_squares = [x**2 for x in range(1, 6) if x % 2 == 0]
+print(even_squares)  # Output: [4, 16]
 
-# Using a while loop
-count = 0
-while count < 5:
-    print(f"Current count: {count}")
-    count += 1
-
-# Using a nested loop
-for i in range(3):
-    print(f"Outer loop, i: {i}")
-    for j in range(2):
-        print(f"  Inner loop, j: {j}")
+# Nested list comprehension
+matrix = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+transpose = [[row[i] for row in matrix] for i in range(len(matrix))]
+print(transpose)  # Output: [[1, 4, 7], [2, 5, 8], [3, 6, 9]]
 
 ```
 
