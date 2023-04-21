@@ -1,47 +1,43 @@
 # pychd
 
-Python decompiler using ChatGPT
+The ChatGPT-powered decompiler for Python, providing superior code analysis capabilities
 
-## Setup
+## Usage
+
+### Install
+
+From pip
 
 ```bash
-poetry install
-poetry run pre-commit install
+pip install pychd
 ```
 
-Set `OPENAI_API_KEY` environment variable. If you're using `direnv`, you can use `.envrc.template` as a template.
-Put `src/pychd/logging.conf`. You can copy `src/pychd/logging.conf.template` like this:
+### Compile
 
 ```bash
-cp src/pychd/logging.conf.template src/pychd/logging.conf
-```
-
-## Compile
-
-```bash
-poetry run pychd compile <directory | file> # you need to specify a directory or a .py file
+pychd compile <directory | file> # you need to specify a directory or a .py file
 ```
 
 E.g.,
 
 ```bash
-poetry run pychd compile examples/01_example_variables.py # `example/__pycache__/01_example_variables.cpython-310.pyc` will be created
+pychd compile examples/01_example_variables.py # `example/__pycache__/01_example_variables.cpython-310.pyc` will be created
 ```
 
-## Decompile
+### Decompile
 
 ```bash
-poetry run pychd decompile <pyc-file> # you need to specify a .pyc file
+pychd decompile <pyc-file> # you need to specify a .pyc file
 ```
 
 E.g.,
 
 ```bash
-poetry run pychd decompile example/__pycache__/01_example_variables.cpython-310.pyc # decompiled code will be printed
+pychd decompile example/__pycache__/01_example_variables.cpython-310.pyc # decompiled code will be printed
 ```
 
 ```bash
-poetry run pychd decompile example/__pycache__/01_example_variables.cpython-310.pyc -o example/__pycache__/01_example_variables.cpython-310.py # decompiled code will be written to `example/__pycache__/01_example_variables.cpython-310.py`
+pychd decompile example/__pycache__/01_example_variables.cpython-310.pyc -o example/__pycache__/01_example_variables.cpython-310.py # decompiled code will be written to `example/__pycache__/01_example_variables.cpython-310.py`
 ```
 
 ## Examples
@@ -881,4 +877,20 @@ with open(temp_path, 'r') as temp_file:
 
 os.remove(temp_path)
 print('Removed temporary file: {0}'.format(temp_path))
+```
+
+## Development
+
+## Setup
+
+```bash
+poetry install
+poetry run pre-commit install
+```
+
+Set `OPENAI_API_KEY` environment variable. If you're using `direnv`, you can use `.envrc.template` as a template.
+Put `src/pychd/logging.conf`. You can copy `src/pychd/logging.conf.template` like this:
+
+```bash
+cp src/pychd/logging.conf.template src/pychd/logging.conf
 ```
