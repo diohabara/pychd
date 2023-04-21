@@ -1,6 +1,6 @@
 [tool.poetry]
 authors = ["卍diohabara卍 <diohabara@gmail.com>"]
-description = "The ChatGPT-powered Python decompiler provided superior code analysis capabilities"
+description = "The ChatGPT-powered decompiler for Python, providing superior code analysis capabilities"
 keywords = ["decompiler", "python", "poetry", "bytecode"]
 license = "MIT"
 name = "pychd"
