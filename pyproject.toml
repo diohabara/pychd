@@ -1,30 +1,27 @@
-[tool.poetry]
-authors = ["卍diohabara卍 <diohabara@gmail.com>"]
-description = "The ChatGPT-powered decompiler for Python, providing superior code analysis capabilities"
-keywords = ["decompiler", "python", "poetry", "bytecode"]
-license = "MIT"
+[project]
 name = "pychd"
-packages = [{include = "src/pychd"}]
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "卍diohabara卍", email = "diohabara@users.noreply.github.com" }
+]
+dependencies = [
+    "openai>=1.35.3",
+    "xdis>=6.1.0",
+]
 readme = "README.md"
-repository = "https://github.com/diohabara/pychd"
-version = "0.1.6"
-
-[tool.poetry.dependencies]
-openai = "^0.27.4"
-python = ">=3.8, <3.11"
-pytype = "^2023.4.18"
-
-[tool.poetry.group.dev.dependencies]
-black = "^23.3.0"
-isort = "^5.12.0"
-mypy = "^1.2.0"
-mypy-extensions = "^1.0.0"
-pre-commit = "^3.2.2"
-pytest = "^7.3.1"
+requires-python = ">= 3.12"
 
 [build-system]
-build-backend = "poetry.core.masonry.api"
-requires = ["poetry-core"]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.poetry.scripts]
-pychd = "src.pychd.main:cli"
+[tool.rye]
+managed = true
+dev-dependencies = []
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pychd"]

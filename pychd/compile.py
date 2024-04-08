@@ -14,10 +14,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def compile(to_compile: Path) -> None:
+def compile(to_compile: Path, output_path: Path | None) -> None:
+    if output_path is None:
+        output_path = to_compile.with_suffix(".pyc")
     if to_compile.is_dir():
-        logging.info("Compiling Python source files...")
-        compileall.compile_dir(to_compile)
+        logging.info(f"Compiling Python source files... {to_compile}")
+        compileall.compile_dir(to_compile, ddir=output_path)
     else:
-        logging.info("Compiling Python source file...")
-        py_compile.compile(str(to_compile))
+        logging.info(f"Compiling Python source files... {to_compile}")
+        py_compile.compile(str(to_compile), cfile=str(output_path))
