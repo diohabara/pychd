@@ -24,6 +24,7 @@ dev-dependencies = [
     "respx",
     "pytest",
     "ruff",
+    "pre-commit>=3.7.1",
 ]
 
 [tool.hatch.metadata]
