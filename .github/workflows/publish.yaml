@@ -3,6 +3,9 @@ name: Publish PyPI
 on:
   release:
     types: [published]
+  push:
+    tags:
+      - '*'
 
 jobs:
   pypi-publish:
