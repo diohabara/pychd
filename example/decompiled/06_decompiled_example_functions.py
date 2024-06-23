@@ -1,5 +1,6 @@
 global_var = "I'm a global variable"
 
+
 def outer_function():
     outer_local_var = "I'm a local variable in the outer function"
 
@@ -13,19 +14,21 @@ def outer_function():
     print("Outer function: ", global_var)
     inner_function()
 
+
 def calculate(operation, a, b):
-    if operation == 'add':
+    if operation == "add":
         return a + b
-    elif operation == 'subtract':
+    elif operation == "subtract":
         return a - b
-    elif operation == 'multiply':
+    elif operation == "multiply":
         return a * b
-    elif operation == 'divide':
+    elif operation == "divide":
         return a / b
     else:
         return None
 
+
 multiply = lambda x, y: x * y
 
-print(calculate('add', 4, 5))
+print(calculate("add", 4, 5))
 print(multiply(3, 4))

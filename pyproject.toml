@@ -1,7 +1,8 @@
 [project]
 name = "pychd"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "The ChatGPT-powered decompiler for Python, providing superior code analysis capabilities"
+readme = "README.md"
 authors = [
     { name = "卍diohabara卍", email = "diohabara@users.noreply.github.com" }
 ]
@@ -9,19 +10,24 @@ dependencies = [
     "openai>=1.35.3",
     "xdis>=6.1.0",
 ]
-readme = "README.md"
 requires-python = ">= 3.12"
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.scripts]
+openai = "pychd.cli:main"
 
 [tool.rye]
 managed = true
-dev-dependencies = []
+# version pins are in requirements-dev.lock
+dev-dependencies = [
+    "pyright>=1.1.359",
+    "mypy",
+    "respx",
+    "pytest",
+    "ruff",
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pychd"]
+packages = ["ychd"]

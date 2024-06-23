@@ -1,5 +1,6 @@
 global_var = "I'm a global variable"
 
+
 def outer_function():
     outer_local_var = "I'm a local variable in the outer function"
 
@@ -15,6 +16,7 @@ def outer_function():
 
     inner_function()
 
+
 def calculate(operation, a, b):
     if operation == "add":
         return a + b
@@ -26,6 +28,7 @@ def calculate(operation, a, b):
         return a / b
     else:
         return None
+
 
 # Test the outer_function
 outer_function()

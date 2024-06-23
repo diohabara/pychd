@@ -1,26 +1,30 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
-  ci:
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.8", "3.9", "3.10"]
-        os: [ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - name: Install poetry
-        run: pipx install poetry
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: "poetry"
-      - name: Install
+      - uses: actions/checkout@v4
+
+      - name: Install Rye
         run: |
-          poetry install
-          poetry run pre-commit install
-      - name: Lint
-        run: |
-          poetry run pre-commit run --files .pre-commit-config.yaml
+          curl -sSf https://rye.astral.sh/get | bash
+          echo "$HOME/.rye/shims" >> $GITHUB_PATH
+        env:
+          RYE_VERSION: 0.24.0
+          RYE_INSTALL_OPTION: "--yes"
+
+      - name: Install dependencies
+        run: rye sync --all-features
+
+      - name: Run lints
+        run: pre-commit

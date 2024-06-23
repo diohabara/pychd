@@ -14,11 +14,7 @@ list_example = [1, 2, 3, 4, 5]
 tuple_example = (1, "apple", 3.14)
 
 # Dictionary
-dict_example = {
-    "name": "John Doe",
-    "age": 30,
-    "city": "New York"
-}
+dict_example = {"name": "John Doe", "age": 30, "city": "New York"}
 
 # Set
 set_example = {1, 2, 3, 4, 5}
