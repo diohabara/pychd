@@ -15,6 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Act dependencies
+        if: ${{ env.ACT }}
+        run: |
+          apt-get update && apt-get install curl -y
+
       - name: Install Rye
         run: |
           curl -sSf https://rye.astral.sh/get | bash
@@ -27,4 +32,5 @@ jobs:
         run: rye sync --all-features
 
       - name: Run lints
-        run: pre-commit
+        run: |
+          rye lint pychd
