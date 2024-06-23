@@ -1,6 +1,6 @@
 [project]
 name = "pychd"
-version = "0.2.3"
+version = "0.2.4"
 description = "The ChatGPT-powered decompiler for Python, providing superior code analysis capabilities"
 readme = "README.md"
 authors = [
