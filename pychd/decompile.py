@@ -6,7 +6,8 @@ import sys
 import textwrap
 from pathlib import Path
 
-from litellm import completion
+import litellm
+from litellm import completion, token_counter
 from xdis.disasm import disco
 from xdis.load import load_module
 
@@ -78,11 +79,63 @@ def disassemble_pyc_file(pyc_file: Path) -> tuple[str, tuple]:
     return disassembled_pyc, version_tuple
 
 
-def decompile_disassembled_pyc(
-    disassembled_pyc: str, version_tuple: tuple, model: ModelType
+def _get_max_input_tokens(model: str, default: int = 8192) -> int:
+    """Return the maximum input tokens for a model, falling back to *default*."""
+    try:
+        info = litellm.get_model_info(model)
+        max_tokens = info["max_input_tokens"]
+        if max_tokens is not None:
+            return max_tokens
+        return default
+    except Exception:
+        logging.debug(
+            f"Could not retrieve model info for {model!r}; using default {default}"
+        )
+        return default
+
+
+def _split_disassembly(text: str, max_tokens: int, model: str) -> list[str]:
+    """Split disassembly text into chunks that each fit within *max_tokens*.
+
+    The text is first split on blank-line boundaries (``\\n\\n``). Consecutive
+    blocks are greedily grouped so that the token count of each chunk stays
+    within the limit.  If a single block exceeds the limit it is emitted as
+    its own chunk.
+    """
+    blocks = text.split("\n\n")
+    chunks: list[str] = []
+    current_blocks: list[str] = []
+    current_text = ""
+
+    for block in blocks:
+        candidate = current_text + "\n\n" + block if current_text else block
+        candidate_tokens = token_counter(model=model, text=candidate)
+        if candidate_tokens <= max_tokens or not current_blocks:
+            # Still fits, or this is the very first block (must include it).
+            current_blocks.append(block)
+            current_text = candidate
+        else:
+            # Adding this block would exceed the limit – flush current chunk.
+            chunks.append(current_text)
+            current_blocks = [block]
+            current_text = block
+
+    # Don't forget the last chunk.
+    if current_text:
+        chunks.append(current_text)
+
+    return chunks
+
+
+def _decompile_chunk(
+    disassembled_pyc: str,
+    version_tuple: tuple,
+    model: ModelType,
+    part_info: str | None = None,
 ) -> str:
-    logging.info(f"{model=}")
+    """Send a single (possibly chunked) disassembly to the LLM and return source."""
     version_str = f"{version_tuple[0]}.{version_tuple[1]}"
+    part_line = f"\nThis is {part_info} of the disassembly.\n" if part_info else ""
     user_prompt = textwrap.dedent(
         f"""\
         You are a Python decompiler.
@@ -91,7 +144,7 @@ def decompile_disassembled_pyc(
         Output only the original full source code.
         Do not the natural language description.
         Do not surround the code with triple quotes such as '```' or '```python'.
-        ```
+        {part_line}```
         {disassembled_pyc}
         ```
         """
@@ -105,6 +158,30 @@ def decompile_disassembled_pyc(
     generated_text: str = response.choices[0].message.content
     logging.debug(f"{generated_text=}")
     return generated_text
+
+
+def decompile_disassembled_pyc(
+    disassembled_pyc: str, version_tuple: tuple, model: ModelType
+) -> str:
+    logging.info(f"{model=}")
+
+    # Reserve tokens for the prompt template and model output.
+    prompt_overhead = 2000
+    max_input = _get_max_input_tokens(model) - prompt_overhead
+
+    chunks = _split_disassembly(disassembled_pyc, max_tokens=max_input, model=model)
+
+    if len(chunks) == 1:
+        return _decompile_chunk(disassembled_pyc, version_tuple, model)
+
+    logging.info(f"Disassembly split into {len(chunks)} chunks")
+    parts: list[str] = []
+    for idx, chunk in enumerate(chunks, 1):
+        part_info = f"Part {idx} of {len(chunks)}"
+        logging.info(f"Decompiling {part_info}...")
+        parts.append(_decompile_chunk(chunk, version_tuple, model, part_info=part_info))
+
+    return "\n\n".join(parts)
 
 
 def decompile(
