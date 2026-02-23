@@ -26,11 +26,14 @@ def parse_args() -> argparse.Namespace:
     parser_decompile.add_argument(
         "-m",
         "--model",
-        help="Model to use for decompilation",
+        help=(
+            "Model to use for decompilation"
+            " (e.g. gpt-4o, claude-sonnet-4-20250514,"
+            " gemini/gemini-2.0-flash, ollama/llama3)"
+        ),
         type=str,
         required=False,
-        choices=["gpt-3.5-turbo", "gpt-4.0-turbo"],
-        default="gpt-3.5-turbo",
+        default="ollama/deepseek-r1",
     )
 
     # create the parser for the "compile" command
@@ -59,6 +62,7 @@ def cli(args: argparse.Namespace) -> None:
     if args.command == "compile":
         to_compile = Path(args.path)
         output_path = Path(args.output) if args.output else None
+        # pyrefly: ignore[missing-attribute]
         compile.compile(to_compile=to_compile, output_path=output_path)
     elif args.command == "decompile":
         to_decompile = Path(args.path)

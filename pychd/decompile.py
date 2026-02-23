@@ -5,9 +5,8 @@ import marshal
 import sys
 import textwrap
 from pathlib import Path
-from typing import List
 
-from openai import OpenAI
+from litellm import completion
 from xdis.magics import magic_int2tuple
 
 from pychd.types import ModelType
@@ -65,38 +64,29 @@ def disassemble_pyc_file(pyc_file: Path) -> str:
 
 
 def decompile_disassembled_pyc(disassembled_pyc: str, model: ModelType) -> str:
-    openai_models: List[ModelType] = ["gpt-3.5-turbo", "gpt-4.0-turbo"]
-    claude_models: List[ModelType] = []  # TODO: placeholder for Claude's models
     logging.info(f"{model=}")
-    if model in openai_models:
-        temperature = 0.7
-        user_prompt = textwrap.dedent(
-            f"""\
-            You are a Python decompiler.
-            You will be given a disassembled Python bytecode.
-            Decompile it into the original source code.
-            Output only the original full source code.
-            Do not the natural language description.
-            Do not surround the code with triple quotes such as '```' or '```python'.
-            ```
-            {disassembled_pyc}
-            ```
-            """
-        )
-        client = OpenAI()
-        completion = client.chat.completions.create(
-            model=model,
-            temperature=temperature,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        logging.debug(f"{completion=}")
-        generated_text: str = completion.choices[0].message.content
-        logging.debug(f"{generated_text=}")
-        return generated_text
-    elif model in claude_models:
-        raise NotImplementedError("Claude's models are not yet supported")
-    else:
-        raise ValueError(f"Model {model} not supported")
+    user_prompt = textwrap.dedent(
+        f"""\
+        You are a Python decompiler.
+        You will be given a disassembled Python bytecode.
+        Decompile it into the original source code.
+        Output only the original full source code.
+        Do not the natural language description.
+        Do not surround the code with triple quotes such as '```' or '```python'.
+        ```
+        {disassembled_pyc}
+        ```
+        """
+    )
+    response = completion(  # pyrefly: ignore[not-callable]
+        model=model,
+        temperature=0.7,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    logging.debug(f"{response=}")
+    generated_text: str = response.choices[0].message.content
+    logging.debug(f"{generated_text=}")
+    return generated_text
 
 
 def decompile(
