@@ -42,3 +42,6 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["pychd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
