@@ -11,18 +11,15 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
+      - run: just lint
 
-      - name: Build Docker image
-        run: docker build -t pychd .
-
-      - name: Run ruff check
-        run: docker run --rm pychd uv run ruff check pychd
-
-      - name: Run ruff format check
-        run: docker run --rm pychd uv run ruff format --check pychd
-
-      - name: Run pyrefly check
-        run: docker run --rm pychd uv run pyrefly check pychd
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
+      - run: just test
