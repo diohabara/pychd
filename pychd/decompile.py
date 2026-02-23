@@ -7,49 +7,64 @@ import textwrap
 from pathlib import Path
 
 from litellm import completion
-from xdis.magics import magic_int2tuple
+from xdis.disasm import disco
+from xdis.load import load_module
 
 from pychd.types import ModelType
 
 
-def disassemble_pyc_file(pyc_file: Path) -> str:
+def _disassemble_native(pyc_file: Path) -> str:
+    """Disassemble using the standard library (current interpreter version only)."""
     with open(pyc_file, "rb") as f:
-        skip_bytes = 16  # TODO: This is a hack. Fix this.
-        # Read the first 4 bytes, which contain the magic number
-        magic_word = f.read(4)
-        skip_bytes -= 4
-        logging.debug(f"{magic_word=}")
-        magic_int = int.from_bytes(magic_word[:2], "little")
-        logging.debug(f"{magic_int=}")
-        (pyc_major_version, pyc_minor_version, pyc_micro_version) = magic_int2tuple(
-            magic_int
-        )
-        logging.debug(
-            f"{pyc_major_version=}, {pyc_minor_version=}, {pyc_micro_version=}"
-        )
-        py_major_version, py_minor_version, _, _, _ = sys.version_info
-        if not (
-            pyc_major_version == py_major_version
-            and pyc_minor_version == py_minor_version
-        ):
-            logging.error(
-                f"Python bytecode ({pyc_major_version}.{pyc_minor_version}) \
-                    and your Python version ({py_major_version}.{py_minor_version}.) \
-                        are incompatible"
-            )
-            sys.exit(1)
-        logging.debug(
-            f"Python bytecode uses Python {py_major_version}.{py_minor_version}"
-        )
-        f.read(skip_bytes)
+        # Python 3.7+ uses a 16-byte header
+        f.read(16)
         bytecode = marshal.load(f)
-        logging.debug(f"{bytecode=}")
-    original_stdout = sys.stdout
     string_output = io.StringIO()
+    original_stdout = sys.stdout
     sys.stdout = string_output
     dis.dis(bytecode)
     sys.stdout = original_stdout
-    disassembled_pyc = string_output.getvalue()
+    return string_output.getvalue()
+
+
+def disassemble_pyc_file(pyc_file: Path) -> tuple[str, tuple]:
+    """Disassemble a .pyc file from any Python version.
+
+    Uses xdis for cross-version disassembly. Falls back to the standard
+    library when the .pyc matches the current interpreter version and
+    xdis encounters an error.
+
+    Returns a tuple of (disassembled_text, version_tuple).
+    """
+    (version_tuple, timestamp, magic_int, co, is_pypy, source_size, sip_hash) = (
+        load_module(str(pyc_file))
+    )
+    logging.debug(f"{version_tuple=}, {magic_int=}, {is_pypy=}")
+    logging.info(
+        f"Detected Python {version_tuple[0]}.{version_tuple[1]} bytecode"
+        f"{' (PyPy)' if is_pypy else ''}"
+    )
+
+    try:
+        string_output = io.StringIO()
+        disco(
+            version_tuple,
+            co,
+            timestamp,
+            out=string_output,
+            is_pypy=is_pypy,
+            magic_int=magic_int,
+            source_size=source_size,
+            sip_hash=sip_hash,
+        )
+        disassembled_pyc = string_output.getvalue()
+    except Exception:
+        py_version = sys.version_info[:2]
+        if version_tuple[:2] == py_version:
+            logging.debug("xdis failed, falling back to standard dis module")
+            disassembled_pyc = _disassemble_native(pyc_file)
+        else:
+            raise
 
     logging.info(
         textwrap.dedent(
@@ -60,16 +75,19 @@ def disassemble_pyc_file(pyc_file: Path) -> str:
       """
         )
     )
-    return str(disassembled_pyc)
+    return disassembled_pyc, version_tuple
 
 
-def decompile_disassembled_pyc(disassembled_pyc: str, model: ModelType) -> str:
+def decompile_disassembled_pyc(
+    disassembled_pyc: str, version_tuple: tuple, model: ModelType
+) -> str:
     logging.info(f"{model=}")
+    version_str = f"{version_tuple[0]}.{version_tuple[1]}"
     user_prompt = textwrap.dedent(
         f"""\
         You are a Python decompiler.
-        You will be given a disassembled Python bytecode.
-        Decompile it into the original source code.
+        You will be given a disassembled Python {version_str} bytecode.
+        Decompile it into the original Python {version_str} source code.
         Output only the original full source code.
         Do not the natural language description.
         Do not surround the code with triple quotes such as '```' or '```python'.
@@ -97,9 +115,9 @@ def decompile(
     logging.info("Disassembling Python bytecode file...")
     input_pyc_file = to_decompile
     logging.info(f"Input Python bytecode file: {input_pyc_file}")
-    disassembled_pyc = disassemble_pyc_file(input_pyc_file)
+    disassembled_pyc, version_tuple = disassemble_pyc_file(input_pyc_file)
     logging.info("Decompiling disassembled Python bytecode...")
-    decompiled_py = decompile_disassembled_pyc(disassembled_pyc, model)
+    decompiled_py = decompile_disassembled_pyc(disassembled_pyc, version_tuple, model)
     # if no path is specified, print to stdout
     if not output_path:
         logging.info("No output path specified. Printing to stdout...")
