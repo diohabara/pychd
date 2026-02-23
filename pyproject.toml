@@ -7,29 +7,38 @@ authors = [
     { name = "卍diohabara卍", email = "diohabara@users.noreply.github.com" }
 ]
 dependencies = [
-    "openai>=1.35.3",
+    "litellm>=1.30.0",
     "xdis>=6.1.0",
-    "pre-commit>=3.7.1",
 ]
-requires-python = ">= 3.12"
+requires-python = ">= 3.14"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project.scripts]
-openai = "pychd.cli:main"
+pychd = "pychd.main:main"
 
-[tool.rye]
-managed = true
-# version pins are in requirements-dev.lock
-dev-dependencies = [
-    "pyright>=1.1.359",
-    "mypy",
+[dependency-groups]
+dev = [
+    "pyrefly",
     "respx",
     "pytest",
     "ruff",
-    "pre-commit>=3.7.1",
+    "prek",
 ]
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pyrefly]
+python_version = "3.14"
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["ychd"]
+packages = ["pychd"]

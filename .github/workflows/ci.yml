@@ -15,22 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Act dependencies
-        if: ${{ env.ACT }}
-        run: |
-          apt-get update && apt-get install curl -y
+      - name: Build Docker image
+        run: docker build -t pychd .
 
-      - name: Install Rye
-        run: |
-          curl -sSf https://rye.astral.sh/get | bash
-          echo "$HOME/.rye/shims" >> $GITHUB_PATH
-        env:
-          RYE_VERSION: 0.34.0
-          RYE_INSTALL_OPTION: "--yes"
+      - name: Run ruff check
+        run: docker run --rm pychd uv run ruff check pychd
 
-      - name: Install dependencies
-        run: rye sync --all-features
+      - name: Run ruff format check
+        run: docker run --rm pychd uv run ruff format --check pychd
 
-      - name: Run lints
-        run: |
-          rye lint pychd
+      - name: Run pyrefly check
+        run: docker run --rm pychd uv run pyrefly check pychd
