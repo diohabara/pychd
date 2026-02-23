@@ -659,7 +659,7 @@ wheels = [
 [[package]]
 name = "pychd"
 version = "0.2.4"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "litellm" },
     { name = "xdis" },

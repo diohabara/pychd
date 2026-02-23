@@ -12,8 +12,12 @@ dependencies = [
 ]
 requires-python = ">= 3.14"
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project.scripts]
-openai = "pychd.cli:main"
+pychd = "pychd.main:main"
 
 [dependency-groups]
 dev = [
@@ -37,4 +41,4 @@ python_version = "3.14"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["ychd"]
+packages = ["pychd"]
