@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 from pychd import compile, decompile
+from pychd.validate import validate, validate_directory
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +49,28 @@ def parse_args() -> argparse.Namespace:
         "-v", "--verbose", help="Increase output verbosity", action="store_true"
     )
 
+    # create the parser for the "validate" command
+    parser_validate = subparsers.add_parser(
+        "validate",
+        help="Validate decompiled output against original source.",
+    )
+    parser_validate.add_argument(
+        "original",
+        help="Original .py file or directory",
+        type=str,
+    )
+    parser_validate.add_argument(
+        "decompiled",
+        help="Decompiled .py file or directory",
+        type=str,
+    )
+    parser_validate.add_argument(
+        "-v",
+        "--verbose",
+        help="Increase output verbosity",
+        action="store_true",
+    )
+
     return parser.parse_args()
 
 
@@ -70,6 +93,21 @@ def cli(args: argparse.Namespace) -> None:
         decompile.decompile(
             to_decompile=to_decompile, output_path=output_path, model=args.model
         )
+    elif args.command == "validate":
+        original = Path(args.original)
+        decompiled = Path(args.decompiled)
+        if original.is_dir() and decompiled.is_dir():
+            results = validate_directory(original, decompiled)
+            matches = sum(1 for _, r in results if r.match)
+            total = len(results)
+            for name, result in results:
+                status = "MATCH" if result.match else "DIFFER"
+                print(f"  {status}: {name} - {result.details}")
+            print(f"\nResult: {matches}/{total} files match")
+        else:
+            result = validate(original, decompiled)
+            status = "MATCH" if result.match else "DIFFER"
+            print(f"{status}: {result.details}")
 
 
 def main() -> None:
