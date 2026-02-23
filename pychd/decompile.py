@@ -83,7 +83,10 @@ def _get_max_input_tokens(model: str, default: int = 8192) -> int:
     """Return the maximum input tokens for a model, falling back to *default*."""
     try:
         info = litellm.get_model_info(model)
-        return info["max_input_tokens"]
+        max_tokens = info["max_input_tokens"]
+        if max_tokens is not None:
+            return max_tokens
+        return default
     except Exception:
         logging.debug(
             f"Could not retrieve model info for {model!r}; using default {default}"
