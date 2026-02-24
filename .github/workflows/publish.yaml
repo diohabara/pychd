@@ -1,29 +1,28 @@
-name: Publish PyPI
+name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
   push:
     tags:
-      - '*'
+      - "v*"
 
 jobs:
-  publish:
-    name: publish
+  ci:
+    name: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
+      - run: just ci
 
-      - name: Install Rye
-        run: |
-          curl -sSf https://rye.astral.sh/get | bash
-          echo "$HOME/.rye/shims" >> $GITHUB_PATH
-        env:
-          RYE_VERSION: 0.34.0
-          RYE_INSTALL_OPTION: "--yes"
-
-      - name: Publish to PyPI
-        run: |
-          bash ./bin/publish-pypi
-        env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+  publish:
+    name: publish
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1

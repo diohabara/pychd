@@ -1,7 +1,7 @@
 [project]
 name = "pychd"
-version = "0.2.4"
-description = "The ChatGPT-powered decompiler for Python, providing superior code analysis capabilities"
+version = "1.0.0"
+description = "LLM-powered Python bytecode decompiler supporting multiple providers via litellm"
 readme = "README.md"
 authors = [
     { name = "卍diohabara卍", email = "diohabara@users.noreply.github.com" }
