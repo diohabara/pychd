@@ -39,3 +39,7 @@ decompile path model="ollama/deepseek-r1": build
 # Validate decompiled output against original
 validate original decompiled: build
     docker run --rm -v "$(pwd)":/app {{ image }} uv run pychd validate {{ original }} {{ decompiled }}
+
+# Build and publish to PyPI (requires PYPI_TOKEN env var)
+publish: build
+    docker run --rm -e PYPI_TOKEN {{ image }} sh -c 'uv build && uv publish --token "$PYPI_TOKEN"'
