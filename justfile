@@ -2,6 +2,10 @@
 
 image := "pychd"
 
+# List available recipes
+default:
+    @just --list
+
 # Build the Docker image
 build:
     docker build -t {{ image }} .
@@ -14,8 +18,8 @@ lint: build
 
 # Auto-fix lint issues
 fix: build
-    docker run --rm -v "$(pwd)":/app {{ image }} uv run ruff check --fix pychd tests
-    docker run --rm -v "$(pwd)":/app {{ image }} uv run ruff format pychd tests
+    docker run --rm -v "$(pwd)":/app {{ image }} uv run --link-mode=copy ruff check --fix pychd tests
+    docker run --rm -v "$(pwd)":/app {{ image }} uv run --link-mode=copy ruff format pychd tests
 
 # Run tests
 test: build
@@ -30,15 +34,15 @@ shell: build
 
 # Compile a Python file to .pyc
 compile path: build
-    docker run --rm -v "$(pwd)":/app {{ image }} uv run pychd compile {{ path }}
+    docker run --rm -v "$(pwd)":/app {{ image }} uv run --link-mode=copy pychd compile {{ path }}
 
 # Decompile a .pyc file (default model: ollama/deepseek-r1)
 decompile path model="ollama/deepseek-r1": build
-    docker run --rm -v "$(pwd)":/app {{ image }} uv run pychd decompile {{ path }} -m {{ model }}
+    docker run --rm -v "$(pwd)":/app {{ image }} uv run --link-mode=copy pychd decompile {{ path }} -m {{ model }}
 
 # Validate decompiled output against original
 validate original decompiled: build
-    docker run --rm -v "$(pwd)":/app {{ image }} uv run pychd validate {{ original }} {{ decompiled }}
+    docker run --rm -v "$(pwd)":/app {{ image }} uv run --link-mode=copy pychd validate {{ original }} {{ decompiled }}
 
 # Tag a release and push (triggers publish workflow)
 release version:
