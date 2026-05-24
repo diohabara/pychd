@@ -88,6 +88,11 @@ bench-cursor: bench-setup
 # Run all benchmarks back-to-back.
 bench: bench-stdlib bench-pypi bench-cursor
 
+# Generate cross-version .pyc fixtures (one per locally-installed Python).
+bench-versions:
+    uv run python tools/build_multiversion_fixtures.py
+    uv run pytest tests/test_versions.py -v
+
 # Full reproducibility: build corpora, run all tests + lint + benchmarks,
 # regenerate README's paper-generated block. The single entry point for
 # anyone trying to reproduce the published results.

@@ -1,254 +1,468 @@
-# PyChD — A Hybrid Rule-Based / LLM Python Bytecode Decompiler
+# PyChD
 
 [![CI](https://github.com/diohabara/pychd/actions/workflows/ci.yml/badge.svg)](https://github.com/diohabara/pychd/actions/workflows/ci.yml)
 [![PyPI Version](https://img.shields.io/pypi/v/pychd.svg)](https://pypi.python.org/pypi/pychd)
 
-> **Abstract.** PyChD decompiles Python 3.14 `.pyc` files using a
-> deterministic *rule-based* pass that recovers the module skeleton
-> (imports, class/function signatures, docstrings, annotations,
-> module-level constants) directly from the bytecode, then optionally
-> hands the remaining function bodies to an LLM. On 1,217 real-world
-> modules across stdlib / PyPI / cursor-sdk / HumanEval (489k LoC), the
-> rule pass alone recovers **99.8% of public surface signatures** and
-> **99.6% of declarations** without a single LLM call. The residual
-> 0.2% is bytecode that CPython *constant-folds away at compile time*
-> (`if False:` / `if 0:` blocks) — fundamentally unrecoverable by any
-> decompiler.
-
-[Quick start](#quick-start) ·
-[How it works](#how-it-works) ·
-[Evaluation](#evaluation) ·
-[Reproducibility](#reproducibility) ·
-[Related work](#related-work) ·
-[Citing](#citing)
-
----
-
-## 1. What this project is, in one paragraph
-
-Python source code is compiled to a **bytecode** intermediate form
-(`.pyc` files), and the CPython virtual machine executes that
-bytecode. A *decompiler* runs the pipeline in reverse: given a `.pyc`,
-reconstruct the `.py`. This is hard because (i) compilation is lossy
-(comments and exact whitespace vanish), (ii) the bytecode
-specification changes every Python release, and (iii) some constructs
-(e.g. `if False:` blocks) are *erased at compile time* — the bytecode
-literally contains nothing for them. PyChD targets the latest Python
-(**3.14**) where no published decompiler currently works end-to-end,
-combines deterministic rule-based extraction with an optional LLM
-fall-back, and reports per-construct recovery quality on a
-1,000-module benchmark suite drawn from the literature.
+A hybrid **rule-based + LLM** Python bytecode decompiler. Reads a
+`.pyc` (any CPython 3.x), recovers the original `.py`. On Python
+3.14 the deterministic rule pass alone recovers **99.8% of public
+class/function/import names** and **99.6% of declarations** across
+1,217 real-world modules — without invoking any LLM. Older versions
+fall through to an LLM-assisted path that sees the disassembled
+bytecode plus the recovered signature context.
 
 ```mermaid
 flowchart LR
-    py["foo.py<br/>(source)"] -- py_compile --> pyc["foo.pyc<br/>(bytecode)"]
-    pyc -- marshal.load --> code["CodeType<br/>(stdlib object)"]
-    code -- rules.extract_module --> ir["ir.Module<br/>(intermediate representation)"]
-    ir -- "ir.Module.render()" --> rec["recovered .py"]
-    ir -. "leftover bodies" .-> llm["LLM<br/>(optional)"]
-    llm -. RawStatement .-> rec
-    style py fill:#d4e6ff
-    style rec fill:#d4ffd4
-    style llm fill:#fff4d4,stroke-dasharray:5
+    pyc["foo.pyc"] -- detect magic --> ver["Python version"]
+    ver -- 3.14 --> rules["rule-based pass<br/>(deterministic, no LLM)"]
+    ver -- "3.0-3.13" --> xdis["xdis<br/>cross-version disasm"]
+    rules --> ir["pychd.ir<br/>(typed IR)"]
+    xdis --> llm["LLM<br/>(body recovery)"]
+    ir -. unknown bodies .-> llm
+    ir & llm --> rec["recovered .py"]
+    style rules fill:#d4ffd4
+    style xdis fill:#fff4d4
+    style rec fill:#d4e6ff
 ```
 
-## 2. Why this is interesting
-
-| Question | Answer |
-|---|---|
-| **Why decompile Python at all?** | SBOM auditing, malware analysis, recovering lost source, teaching how the CPython compiler works. |
-| **Don't decompilers already exist?** | `uncompyle6` / `decompyle3` stop at Python 3.8; `pycdc` is patchy; `PyLingual` (UT Dallas, 2024) reaches Python 3.12 with an NLP segmentation model; `ByteCodeLLM` (2024) ships full bytecode to an LLM. **None target Python 3.14**, which introduced PEP 749 (lazy annotation closures) and a substantially redesigned class-body layout. |
-| **Why a *hybrid* rule + LLM approach?** | Rules give a hard guarantee for the module's *structural skeleton* (signatures, imports, names); LLMs handle the soft, lossy reconstruction of *function bodies*. The seam is explicit in the IR: ``UnknownBlock`` nodes mark exactly which bytes the LLM needs to look at. This contrasts with PyLingual (entire bytecode through a trained model) and ByteCodeLLM (full disassembly into a chat prompt). |
-| **What about ChatGPT-style end-to-end LLM decompilation?** | Single-shot LLMs hallucinate identifiers, drop imports, and don't generalise across Python versions. Our approach feeds the LLM **only** the disassembly of a single function body with the recovered signature as context — much smaller prompts, no identifier guessing, deterministic structure. |
-
-## 3. Quick start
+## Quick start
 
 ```bash
-# Prereqs: Python 3.14, uv (Astral), just (optional task runner).
+# Install just / uv / Python 3.14 first.
 just setup              # uv sync
-just hooks-install      # register prek pre-commit + pre-push hooks
-just ci                 # lint + type + 258 tests
+just hooks-install      # prek pre-commit + pre-push hooks
+just test               # 278 tests including 86 syntax-coverage + 20 cross-version
 
-# Decompile something:
-uv run pychd decompile path/to/module.pyc                 # hybrid mode (rules + LLM)
-uv run pychd decompile path/to/module.pyc --rules-only    # rules only, no LLM call
-uv run pychd decompile path/to/package/ -o recovered/     # whole project tree
+# Decompile a single .pyc:
+uv run pychd decompile path/to/module.pyc
 
-# Pick an LLM model when the LLM is invoked:
-uv run pychd decompile foo.pyc -m gpt-4o
-uv run pychd decompile foo.pyc -m claude-sonnet-4-20250514
-uv run pychd decompile foo.pyc -m ollama/llama3
+# Decompile an entire project tree (mirrors structure into output dir):
+uv run pychd decompile path/to/package/ -o recovered/
 
-# Reproduce every number, table, and figure in this README:
+# Rules-only mode — no LLM calls, deterministic, milliseconds:
+uv run pychd decompile path/to/module.pyc --rules-only
+
+# LLM-only mode (older bytecode versions, or when rules struggle):
+uv run pychd decompile path/to/module.pyc --llm-only -m gpt-4o
+
+# Reproduce every benchmark, table, and figure in this README:
 just paper
 ```
 
-## 4. How it works
+## What you get from each mode
 
-### 4.1 Bytecode is a tree of code objects
+### Example 1: a re-export module (full rule recovery, 0 LLM calls)
 
-A Python module compiled to `.pyc` is a tree of **code objects**:
+Original source (a typical `__init__.py`):
 
-```mermaid
-flowchart TB
-    M["module<br/>&lt;module&gt;"]
-    C1["class<br/>Foo"]
-    F1["def<br/>Foo.__init__"]
-    F2["def<br/>Foo.greet"]
-    A1["__annotate__<br/>(PEP 749 closure)"]
-    M --> C1 & F3["def<br/>helper"]
-    C1 --> F1 & F2 & A1
-    style M fill:#d4e6ff
-    style C1 fill:#fff4d4
-    style A1 fill:#ffd4d4
+```python
+"""Public surface for the foo package."""
+
+from .core import Bar, Baz
+from .util import parse, as_dict
+from .errors import FooError
+
+__all__ = ["Bar", "Baz", "FooError", "as_dict", "parse"]
 ```
 
-Each node is a `CodeType` (Python's built-in type wrapping a bytecode
-instruction stream plus per-function metadata: argument names,
-constants, free variables, …). Recovering the source means walking
-this tree and translating each node back to a Python AST node.
+After `pychd decompile --rules-only`:
 
-### 4.2 What survives compilation, and what does not
+```python
+"""Public surface for the foo package."""
 
-The CPython compiler is *not* invertible. Some information is
-preserved in the `.pyc` bit-for-bit (we can recover it
-deterministically), some is preserved up to a known normalisation
-(recoverable but lossy), and some is **erased at compile time** (no
-amount of cleverness brings it back):
+from .core import Bar, Baz
+from .util import parse, as_dict
+from .errors import FooError
+
+__all__ = ['Bar', 'Baz', 'FooError', 'as_dict', 'parse']
+```
+
+Identical modulo single vs double quotes in `__all__`. Zero LLM
+cost, recovered in 0.9 ms.
+
+### Example 2: a dataclass module (signatures + annotations recovered, bodies need LLM)
+
+Original:
+
+```python
+from dataclasses import dataclass
+from typing import Any
+
+@dataclass(frozen=True)
+class AgentMessage:
+    type: str
+    uuid: str
+    agent_id: str
+    message: Any = None
+
+    @classmethod
+    def from_json(cls, value):
+        return cls(
+            type=value["type"],
+            uuid=value["uuid"],
+            agent_id=value["agentId"],
+            message=value.get("message"),
+        )
+```
+
+After `pychd decompile --rules-only` (no LLM):
+
+```python
+from dataclasses import dataclass
+from typing import Any
+
+class AgentMessage:
+    type: str
+    uuid: str
+    agent_id: str
+    message: Any = None
+    @classmethod
+    def from_json(cls, value):
+        pass  # pychd: unrecovered body
+```
+
+The class declaration, every annotation, the `@classmethod`
+decorator, and the method signature are all recovered
+deterministically. The method **body** is a placeholder; in
+`--hybrid` mode (the default) pychd sends just that body's
+disassembly to the LLM with the signature as context. The
+`@dataclass(frozen=True)` outer decorator is currently dropped —
+it's on the v2 roadmap (see *Limitations* below).
+
+### Example 3: a generic class (PEP 695, Python 3.12+)
+
+Original:
+
+```python
+class Stack[T]:
+    def __init__(self):
+        self.items: list[T] = []
+    def push(self, x: T) -> None:
+        self.items.append(x)
+```
+
+After `pychd decompile --rules-only`:
+
+```python
+class Stack[T]:
+    def __init__(self):
+        pass  # pychd: unrecovered body
+    def push(self, x):
+        pass  # pychd: unrecovered body
+```
+
+The PEP 695 type parameter `[T]` survives — pychd recognises the
+synthetic `<generic parameters of Stack>` wrapper code object that
+the CPython compiler emits and unpacks it. Parameter annotations
+(`x: T`) are dropped because they live in a separate `__annotate__`
+closure on 3.14 (PEP 749).
+
+## How it works
+
+### Step 1: Python compiles your source to bytecode
+
+The CPython compiler takes your `foo.py` and emits `foo.pyc` — a
+binary file containing a **code object** for the module plus a
+nested code object for every function and class. Each code object
+holds:
+
+- the bytecode instructions (one byte opcode + one byte argument,
+  since 3.6 "wordcode"),
+- a `co_consts` tuple of constants used in those instructions,
+- a `co_names` tuple of identifier names,
+- a `co_varnames` tuple of local variable names,
+- argument counts (`co_argcount`, `co_kwonlyargcount`, etc.),
+- flag bits (`co_flags`: is it a coroutine? a generator? does it
+  use *args?).
+
+You can poke at this on any Python install:
+
+```python
+>>> import dis
+>>> def f(a, b=1): return a + b
+>>> dis.dis(f)
+  1           RESUME                   0
+              LOAD_FAST                0 (a)
+              LOAD_FAST                1 (b)
+              BINARY_OP                0 (+)
+              RETURN_VALUE
+>>> f.__code__.co_argcount, f.__code__.co_varnames
+(2, ('a', 'b'))
+```
+
+### Step 2: pychd reads the bytecode back into an IR
+
+pychd's rule pass walks the bytecode and pattern-matches against
+~20 *known shapes*: imports look like one specific opcode sequence,
+class definitions look like another, decorated function definitions
+like a third, and so on. Each match emits an **IR node** in
+`pychd.ir`:
+
+```python
+# What pychd builds internally for `from os.path import join`:
+ir.FromImport(module="os.path", level=0, names=[("join", None)])
+
+# For `def foo(a, b=1): ...`:
+ir.FunctionDef(
+    name="foo",
+    args=ir.Arguments(args=[ir.Arg("a"), ir.Arg("b", default="1")]),
+    body=[ir.UnknownBlock(disassembly="...", signature="def foo")],
+)
+```
+
+The IR is intentionally lossy — it's "what we can *prove* about
+the source from the bytecode," not "exactly the source."
+Anything ambiguous (most function bodies) becomes an
+`UnknownBlock` carrying the raw disassembly so the LLM can take
+over with full context if requested.
+
+### Step 3: the IR renders back to Python source
+
+Each IR node has a `render(indent) -> str` method:
+
+```python
+>>> ir.FromImport(module="os.path", level=0, names=[("join", "j")]).render()
+'from os.path import join as j'
+>>> ir.FunctionDef(name="foo", args=ir.Arguments(args=[ir.Arg("a")])).render()
+'def foo(a):\n    pass'
+```
+
+### Step 4 (optional): the LLM fills in function bodies
+
+For every `UnknownBlock` left in the tree, pychd sends a
+function-body-sized prompt to the configured LLM:
+
+```
+You are a Python decompiler.
+The following Python 3.14 bytecode is the body of:
+    def from_json(cls, value)
+Reconstruct the original Python source for *just the body*…
+
+LOAD_FAST_BORROW cls
+LOAD_FAST_BORROW value
+LOAD_CONST 'type'
+BINARY_SUBSCR
+…
+```
+
+The LLM never sees the rest of the module; the rule pass already
+nailed the signatures, imports, and names. This keeps prompts
+small, costs low, and identifier hallucination rare.
+
+## What survives compilation, and what doesn't
 
 | Construct | Status | Why |
 |---|---|---|
 | Class / function names | ✅ preserved | Stored in `co_name` and `co_names`. |
-| Function signatures (args, defaults, kwonly, posonly, *args, **kw) | ✅ preserved | All in `code.co_argcount`, `code.co_varnames`, etc. |
-| Imports (`import X`, `from X import Y`, relative, star) | ✅ preserved | `IMPORT_NAME` / `IMPORT_FROM` opcodes carry the full module path. |
-| `from __future__ import annotations` | ✅ preserved | Identical bytecode pattern to a normal import. |
-| Docstrings (module / class / function) | ✅ preserved | Stored at `co_consts[0]` for functions, `STORE_NAME __doc__` for modules and classes. Indentation is *normalised* by `inspect.cleandoc` semantics. |
-| Annotations (PEP 749 lazy) | ✅ preserved | Stored as a separate `__annotate__` closure inside the enclosing code object. |
-| Class metaclass / bases (incl. dotted like `abc.ABC`) | ✅ preserved | `LOAD_NAME` + `LOAD_ATTR` chain before `CALL`. |
-| Decorators (bare, dotted, with-args) | ✅ preserved | A sequence of `LOAD_NAME` / `LOAD_ATTR` / `CALL` opcodes wrapping `MAKE_FUNCTION`. |
-| Class-private name mangling (`_C__private`) | ✅ recoverable | The compiler mangles to `_<ClassName>__name`; we unmangle. |
-| Function *body* statements | ⚠️ LLM territory | Logically present in the bytecode but a 1:1 source mapping is multi-valued (many sources compile to the same bytecode). |
-| `if False:` / `if 0:` blocks | ❌ **erased** | CPython's constant folder deletes the entire body. The `.pyc` contains nothing for these. |
+| Function signatures (args, defaults, kwonly, posonly, `*args`, `**kw`) | ✅ preserved | All in `code.co_argcount`, `code.co_varnames`, etc. |
+| Imports (incl. relative, dotted, star, `from __future__`) | ✅ preserved | `IMPORT_NAME` / `IMPORT_FROM` carry the full module path. |
+| Docstrings (module / class / function) | ✅ preserved | `LOAD_CONST <doc>; STORE_NAME __doc__` for modules and classes; `co_consts[0]` for functions. Indentation is normalised by `inspect.cleandoc` semantics. |
+| Annotations (PEP 749 lazy, 3.14+) | ✅ preserved | Stored as a separate `__annotate__` closure. |
+| Class metaclass / dotted bases (`abc.ABC`) | ✅ preserved | `LOAD_NAME` + `LOAD_ATTR` chain before `CALL`. |
+| Bare/dotted/arg-bearing decorators | ✅ preserved | `LOAD_NAME` + optional `LOAD_ATTR` + optional `CALL_KW` wrapping `MAKE_FUNCTION`. |
+| Name-mangled methods (`_C__private`) | ✅ recoverable | Compiler mangles to `_<ClassName>__name`; pychd reverses this. |
+| Function *body statements* | ⚠️ LLM territory | Logically present but the source→bytecode mapping is many-to-one. |
+| `if False:` / `if 0:` blocks | ❌ **erased** | CPython's constant folder deletes them at compile time. |
 | Whitespace, comments | ❌ erased | Tokenised away before bytecode generation. |
 
-### 4.3 Architecture
+### Proof that `if False:` is unrecoverable
 
-```mermaid
-flowchart LR
-    subgraph det["Deterministic — rules-only mode covers all of this"]
-        direction TB
-        bc["dis.Bytecode<br/>(stdlib)"] --> walk["_Walker / _Context<br/>(pattern matcher)"]
-        walk --> ir["pychd.ir<br/>(typed IR)"]
-        ir --> render["ir.Module.render()<br/>(IR → str)"]
-    end
-    subgraph soft["Probabilistic — only used in hybrid mode"]
-        unk["UnknownBlock<br/>(unrecovered body)"]
-        unk --> prompt["body-only LLM prompt"]
-        prompt --> raw["RawStatement"]
-    end
-    render --> out["recovered .py"]
-    ir -. "unrecovered fn bodies" .-> unk
-    raw -. spliced .-> render
-    style det fill:#d4ffd4
-    style soft fill:#fff4d4,stroke-dasharray:5
+```python
+>>> import dis
+>>> dis.dis(compile("if False:\n    import foo\n", "<x>", "exec"))
+   0           RESUME                   0
+               LOAD_CONST               1 (None)
+               RETURN_VALUE
 ```
 
-Three modules carry the work:
+No trace of `import foo`. The bytecode is **literally empty** —
+no decompiler can recover what was never written to disk.
 
-- **`pychd.ir`** (≈270 lines) — typed dataclasses for the intermediate
-  representation. Every node has a `render(indent) -> str` method.
-  The key node is `UnknownBlock`, which is the explicit seam between
-  what the rule pass recovered and what (if anything) the LLM needs to
-  fill in.
-- **`pychd.rules`** (≈1,200 lines) — a forward-pass pattern matcher
-  driven by `dis.Bytecode`. It maintains a small operand stack
-  (literals, names, sentinels) and recognises ~20 instruction
-  patterns: imports, function definitions, class definitions,
-  annotation declarations, decorators, attribute chains, list/set/dict
-  literals (including 3.12+ inlined comprehensions), multi-target
-  chained assigns (`a = b = c = expr`), PEP 695 generics, PEP 749 lazy
-  annotations, and so on.
-- **`pychd.decompile`** (≈400 lines) — the pipeline orchestrator. It
-  loads the `.pyc`, runs the rule pass, optionally invokes the LLM on
-  each `UnknownBlock`, and renders the final IR.
+## Cross-version support
 
-### 4.4 The IR: a small typed language
+pychd identifies any CPython 3.x `.pyc` via the 4-byte magic
+number in its header:
 
-```
-Module:
-  docstring: str | None
-  body: list[Stmt]
-
-Stmt = Import | FromImport | Assign | AnnotationOnly |
-       FunctionDef | ClassDef | UnknownBlock | RawStatement | Docstring
-
-FunctionDef:
-  name, is_async, is_generator, decorators
-  args: Arguments  (posonly, args, vararg, kwonly, kwarg)
-  return_annotation, docstring
-  body: list[Stmt]   ← typically a single UnknownBlock in rules-only mode
-
-ClassDef:
-  name, bases, keywords, decorators, docstring
-  body: list[Stmt]   ← AnnotationOnly / Assign / FunctionDef
+```python
+>>> from pychd.versions import detect_version
+>>> from pathlib import Path
+>>> info = detect_version(Path("foo.pyc"))
+>>> info.label, info.rule_supported, info.epoch_label
+('3.14', True, 'lazy-annotations')
 ```
 
-The IR is intentionally minimal. It is not Python's `ast`; it is what
-the rule pass *can prove* about the source. Anything ambiguous becomes
-an `UnknownBlock` carrying the raw `dis` output so the LLM can take
-over with full context.
+| Python | Latest magic | Rule-based fast path | Notable bytecode change |
+|---|---:|:--:|---|
+| **3.0–3.5** | 3000–3351 | ⚠️ LLM-only | stable bytecode close to Python 2 |
+| **3.6** | 3379 | ⚠️ LLM-only | wordcode (every instruction is exactly 2 bytes) |
+| **3.7** | 3394 | ⚠️ LLM-only | async/await first-class; `CALL_FUNCTION_KW` carries kw names as tuple const |
+| **3.8** | 3413 | ⚠️ LLM-only | walrus operator (PEP 572); positional-only parameters (PEP 570) |
+| **3.9** | 3425 | ⚠️ LLM-only | PEP 585 generic types in annotations (`list[int]`) |
+| **3.10** | 3439 | ⚠️ LLM-only | `match` statement (PEP 634); `MATCH_CLASS`/`MATCH_KEYS`/`MATCH_MAPPING` opcodes |
+| **3.11** | 3495 | ⚠️ LLM-only | PEP 657 exception table replaces `SETUP_FINALLY`; `PRECALL` + `CALL` split |
+| **3.12** | 3531 | ⚠️ LLM-only | PEP 709 comp inlining; PEP 695 generic syntax |
+| **3.13** | 3571 | ⚠️ LLM-only | `CALL_INTRINSIC_1`; `MAKE_FUNCTION`/`SET_FUNCTION_ATTRIBUTE` split |
+| **3.14** | 3627 | ✅ | PEP 749 `__annotate__` closures; `LOAD_SMALL_INT`/`LOAD_FAST_BORROW` |
 
-### 4.5 Three-tier match metric
+The rule-based fast path currently targets 3.14 only — that's where
+the cost of supporting PEP 749 already paid off and where the modern
+CPython compiler optimisations stabilised. Adding a 3.13 rule pass
+is the highest-leverage next step (3.13 bytecode is ~95% identical to
+3.14 modulo `LOAD_SMALL_INT` → `LOAD_CONST`).
 
-Strict `ast.dump` equality is the wrong target for a decompiler: the
-CPython compiler *itself* normalises docstring indentation, deduplicates
-constants, and so on. After our first benchmark run, an *adversarial
-skeptic agent* (a critic LLM prompted to push back on our design)
-identified this and recommended a three-tier breakdown:
+### What's hard about each version
 
-| Tier | What it requires | What it's good for |
-|---|---|---|
-| **signature_match** | Every original class/function/import name in the original module survives in the recovered tree. Function-body contents are out of scope by design. | The headline metric: "did we recover the API surface?" |
-| **declaration_match** | `signature_match` AND every module/class-level variable and annotated attribute survives by name. | Adds class-attribute / annotation coverage. The relevant metric for dataclass / TypedDict / Protocol heavy code. |
-| **strict_match** | Full normalised AST equality (bodies stripped to `pass`, annotations dropped, decorators dropped). | A *regression telltale*, not a shipping criterion — bounded above by CPython compiler normalisations we cannot un-do. |
+The bytecode specification is **not stable across Python versions**.
+Below is a tour of the biggest source of pain for each release.
 
-We track all three and report all three. The skeptic methodology is
-documented in §6.
+#### 3.6 — wordcode
 
-## 5. Evaluation
+Every instruction became exactly two bytes: 1 opcode + 1 argument.
+Before 3.6 some opcodes took multi-byte arguments. Decompilers from
+the 3.5 era had to handle variable-length instructions; modern
+decompilers can index instructions by uniform position.
 
-### 5.1 Methodology
+#### 3.7 — keyword arguments carry names as a tuple const
 
-For every `.py` file *S* in a corpus:
+`f(x=1)` used to emit `LOAD_CONST 1` and a magic
+`CALL_FUNCTION_KW` whose argument said "the top 1 thing is a
+keyword". From 3.7 the *names* of the keywords are pushed as a
+tuple constant:
 
-1. `py_compile.compile(S)` → produces `S.pyc`.
-2. `pychd.decompile_pyc(S.pyc, mode=RULES_ONLY)` → produces recovered
-   source *R*. **No LLM is invoked.**
-3. Parse both `S` and `R` with `ast.parse`.
-4. Compute the three-tier match metric on the resulting ASTs.
+```
+LOAD_NAME f
+LOAD_CONST 1
+LOAD_CONST ('x',)    ← names tuple
+CALL_FUNCTION_KW 1
+```
 
-Determinism: results depend only on (a) the rule engine, (b) the
-running Python's bytecode encoding, and (c) the corpus content.
-Re-running on the same system produces byte-identical numbers.
+Decompilers have to read that tuple constant to know that the `1`
+is bound to `x`, not positional.
 
-### 5.2 Corpora
+#### 3.10 — `match` statements (PEP 634)
 
-Selected to mirror what the published Python-decompilation literature
-evaluates against:
+```python
+match x:
+    case 0: ...
+    case _: ...
+```
 
-| Corpus | Provenance | What it's stressing |
-|---|---|---|
-| `stdlib` | 10 curated single-file stdlib modules | Smoke test on the universal baseline. |
-| `stdlib-full` | Every single-file `.py` under the running Python's stdlib path | Breadth coverage; stress on real, varied stdlib code (PEP 695, lazy annotations, name mangling, ...). |
-| `pypi` | 6 popular pure-Python packages (`requests` / `click` / `attrs` / `flask` / `httpx` / `rich`) | The PyLingual / PyFET "popular PyPI" methodology. |
-| `pypi-top20` | 20 more pure-Python PyPI packages (`certifi`, `urllib3`, `packaging`, `PyYAML`, `jinja2`, `werkzeug`, `beautifulsoup4`, `pygments`, …) | Larger, statistically meaningful PyPI sample. |
-| `humaneval` | 164 reference solutions from OpenAI's HumanEval dataset | The same code-completion benchmark Decompile-Bench (arXiv 2505.12668) uses as its re-executability oracle. |
-| `cursor-sdk` | 19 top-level modules of `cursor-sdk` 0.1.5 | The project's original motivating target — a 2026 real-world SDK on PyPI. |
+becomes a chain of `MATCH_CLASS` / `MATCH_KEYS` / `MATCH_MAPPING`
+opcodes. Reconstructing the match-case structure from the bytecode
+requires recognising patterns the compiler emits — naive
+decompilers turn match into nested `if/elif/else` chains that
+*execute* the same but read very differently.
 
-The corpora are **not** committed to this repository. They are built
-on-demand into `/tmp/pychd-corpora/` by `tools/build_corpora.py`.
+#### 3.11 — PEP 657 zero-cost exceptions
 
-### 5.3 Headline results
+The biggest spec change in years. Try/except no longer uses
+`SETUP_FINALLY` blocks. Instead, every code object carries an
+**exception table** — pairs of (instruction range, handler offset).
+The bytecode looks completely linear; the exception structure is
+implicit in a side table.
+
+Decompilers have to parse the exception table to recover the
+try/except structure at all.
+
+#### 3.12 — PEP 709 comprehension inlining
+
+This silently broke every decompiler. In 3.11:
+
+```python
+x = [i * 2 for i in range(10)]
+```
+
+emits a separate `<listcomp>` code object that the outer module
+calls. In 3.12 the body of the comprehension is inlined directly
+into the enclosing scope — there's no `<listcomp>` code object to
+recurse into anymore. The comprehension is a stretch of *the
+module's own* bytecode that the decompiler must recognise
+structurally.
+
+#### 3.13 — `CALL_INTRINSIC_1`
+
+Several special-purpose opcodes (notably the legacy `IMPORT_STAR`)
+collapse into `CALL_INTRINSIC_1` with an integer argument:
+
+```
+# 3.12 — `from x import *`:
+IMPORT_STAR
+
+# 3.13 — same source:
+CALL_INTRINSIC_1 2   # 2 = INTRINSIC_IMPORT_STAR
+```
+
+If your decompiler doesn't carry the intrinsic-index → semantic
+mapping, `from x import *` looks like an unrelated builtin call.
+
+#### 3.14 — PEP 749 lazy annotations
+
+Every annotated scope (module, class, or function) gets a synthetic
+`__annotate__` closure that returns the annotation dict on demand:
+
+```python
+class C:
+    name: str
+    age: int = 0
+```
+
+In 3.13 and earlier, the class body itself stored the annotations.
+In 3.14, the class body is much shorter — annotations migrate into
+a separate `__annotate__` closure attached via `SET_FUNCTION_ATTRIBUTE`.
+To recover `name: str` and `age: int`, pychd reads the
+`__annotate__` code object out of `co_consts` and walks **its**
+bytecode looking for the (name, annotation) pairs. This is the
+single biggest reason 3.13 and 3.14 need different rule passes.
+
+## Project layout
+
+```
+pychd/
+├── ir.py           # IR dataclasses + render() — the typed representation
+├── rules.py        # bytecode → IR, the rule-based extractor (3.14)
+├── decompile.py    # hybrid pipeline + CLI glue
+├── versions.py     # magic-number table for every CPython 3.x
+├── compile.py      # py_compile wrapper
+├── validate.py     # AST-based diff (with --ignore-annotations)
+└── main.py         # argparse entry point
+
+tests/  (278 tests total)
+├── test_ir.py             # IR node renderers
+├── test_rules.py          # rule extractor unit tests
+├── test_versions.py       # magic-number detection across 3.0–3.14
+├── test_chunking.py       # LLM disassembly chunking
+├── test_compile.py        # compile pipeline
+├── test_decompile.py      # pipeline integration (mocked LLM)
+├── test_validate.py       # AST diff
+├── test_e2e_stdlib.py     # stdlib-style end-to-end recovery
+├── test_cursor_sdk.py     # real-world fixture: cursor-sdk modules
+└── test_syntax_coverage.py  # 86-construct Python 3.14 matrix
+
+tools/
+├── build_corpora.py              # builds 6 PyPI/stdlib/HumanEval corpora
+├── build_multiversion_fixtures.py  # compiles a sample with every local Python
+├── benchmark.py                  # per-module measurement (JSON + markdown)
+└── render_paper.py               # regenerates README "Benchmarks" section
+```
+
+## Benchmarks (run by `just paper`)
+
+For every `.py` file in a corpus:
+
+```
+.py  →  py_compile  →  .pyc  →  pychd rules-only  →  recovered .py
+```
+
+…and measure a **three-tier match metric** on the resulting ASTs:
+
+| Metric | What it requires |
+|---|---|
+| **signature_match** | Every original class/function/import name in the module survives in the recovered tree. Function bodies are out of scope (rule pass emits a placeholder). |
+| **declaration_match** | `signature_match` AND every module/class-level variable and annotated attribute survives by name. |
+| **strict_match** | Full normalised AST equality (bodies stripped to `pass`, annotations dropped, decorators dropped). A regression telltale, bounded above by CPython compiler normalisations. |
+
+LLM is **not** invoked. The numbers below measure exactly what the
+deterministic pass alone recovers.
 
 <!-- BEGIN: paper-generated -->
 
@@ -295,104 +509,46 @@ Bar = signature match · Line = declaration match.
 
 <!-- END: paper-generated -->
 
-### 5.4 What is and isn't fundamentally recoverable
+### Why these corpora?
 
-`if False:` / `if 0:` blocks survive the parser but die in the
-constant folder — their bytecode is literally empty. We can prove this
-with a one-liner:
+Selected to mirror what published Python-decompilation work
+evaluates against. PyLingual ([Wiedemeier et al., 2024](https://kangkookjee.io/wp-content/uploads/2024/11/pylingual.pdf))
+uses CodeSearchNet / PyPI / VirusTotal / PyLingual.io. PyFET ([Ahad et al., S&P 2023](https://userlab.utk.edu/publications/ahad2023pyfet))
+draws from 3,000 CPython stdlib + popular PyPI programs.
+[Decompile-Bench](https://arxiv.org/abs/2505.12668) adds
+HumanEval/MBPP. pychd's corpora are downloaded on demand into
+`/tmp/pychd-corpora/` (nothing third-party is committed):
 
-```python
->>> import dis
->>> dis.dis(compile("if False:\n    import foo\n", "<x>", "exec"))
-   0           RESUME                   0
-               LOAD_CONST               1 (None)
-               RETURN_VALUE
-```
-
-Notice: no trace of `import foo`. No decompiler, however clever, can
-recover what was never written to disk. The two `if False:` /
-`if 0:` cases in our residual table (`stdlib-full/_colorize.py`,
-`stdlib-full/_pylong.py`) account for the entire 0.2% signature
-miss — every other module in the 1,217-module corpus is fully
-recovered.
-
-### 5.5 Python 3.14 syntax coverage
-
-`tests/test_syntax_coverage.py` exercises **86 distinct Python 3.14
-language constructs** as black-box round-trip tests. All pass. The
-matrix:
-
-| Family | Examples |
+| Corpus | Where it comes from |
 |---|---|
-| Imports | plain · dotted · `as` · `from`-star · `from __future__` · relative one/two-dot |
-| Function defs | positional · default · kwonly · posonly · `*args` · `**kw` · async · generator · `yield from` · async generator |
-| Decorators | bare · multiple · dotted (`@a.b`) · arg-bearing (`@d(x=1)`) · on classes · class with args |
-| Classes | empty · single/multi base · dotted base · metaclass · classmethod / staticmethod / property · nested · name-mangled (`_C__private`) |
-| Annotations | parameter · return · module-level `X: int` · class-level annotated fields · `from __future__ import annotations` |
-| Literals | int / float / str / bytes / bool / None / tuple / list / set / frozenset / dict / nested |
-| Typing | TypedDict · Protocol · NamedTuple · `@dataclass` · `@dataclass(frozen=True)` |
-| Match (PEP 634) | literal patterns · class patterns |
-| PEP 695 | `type` alias · `def f[T]` · `class C[T]` |
-| Expressions | walrus · list/set/dict/generator comprehensions · lambda · ternary |
-| Exceptions | try/except/finally · raise … from … · `except*` groups (PEP 654) |
-| Other | `for … else` · `while … else` · `with` (single, multi, async) · `global` / `nonlocal` · `assert` |
+| `stdlib` | 10 curated single-file stdlib modules. |
+| `stdlib-full` | Every single-file `.py` under the running Python's stdlib path. |
+| `pypi` | 6 popular pure-Python PyPI packages (`requests`, `click`, `attrs`, `flask`, `httpx`, `rich`). |
+| `pypi-top20` | 20 more pure-Python PyPI packages (`certifi`, `urllib3`, `packaging`, `PyYAML`, `jinja2`, `werkzeug`, `pygments`, …). |
+| `humaneval` | 164 reference solutions from OpenAI's HumanEval. |
+| `cursor-sdk` | 19 top-level modules of `cursor-sdk` 0.1.5. |
 
-Adding a new construct is one new test in `tests/test_syntax_coverage.py`.
+## Reproducibility
 
-## 6. Skeptic-in-the-loop methodology
-
-PyChD's evaluation methodology was refined through two rounds of an
-**adversarial skeptic review** — an LLM agent given the design
-documents and prompted to push back on local-optimum risks before any
-code was written. Notable interventions:
-
-- *Round 1* recommended discarding strict `ast.dump` skeleton-match as
-  the headline metric (CPython compiler-normalised docstrings cannot be
-  losslessly recovered by *any* decompiler) and introducing the
-  three-tier signature / declaration / strict breakdown. The
-  redefinition alone moved the headline from 9.4% → 47.5% with zero
-  code changes.
-- *Round 1* also ranked five concrete rule fixes by "files unlocked
-  per LoC of patch." All five were implemented.
-- *Round 2* validated that the new metric is honest (not gaming),
-  identified that `@dataclass`-decorated classes were
-  double-emitting `Foo = ...` lines (a CALL chain after the class
-  build), and confirmed that **PEP 749 annotation recovery —
-  originally classed as "low leverage" — was in fact the largest
-  remaining unlock** once decoration was handled.
-
-Both skeptic prompts (with full rationale) are reproducible by
-re-invoking the `Agent` calls referenced at the top of
-`pychd/rules.py`. The prompts themselves are in conversation history
-and the resulting code changes are fully traceable through `git log`.
-
-## 7. Reproducibility
-
-Every number, table, chart, and skeptic finding in this README is
-regenerable by a single command:
+Every number, table, and chart in this README is regenerable by a
+single command:
 
 ```bash
 just paper
 ```
 
-This is equivalent to:
+…which is equivalent to:
 
 ```bash
-uv sync                                        # 1. dependencies
-uv run python tools/build_corpora.py           # 2. download corpora to /tmp
-uv run pytest tests/ -q                        # 3. 258 tests including 86 syntax coverage
-uv run python tools/benchmark.py … --format markdown  # 4. each corpus
-uv run python tools/render_paper.py            # 5. splice into README §5.3
-uv run ruff check pychd tests                  # 6. lint
-uv run ty check pychd tests                    # 7. type check
+uv sync                                    # 1. dependencies
+uv run python tools/build_corpora.py       # 2. download corpora to /tmp
+uv run pytest tests/ -q                    # 3. 278 tests
+uv run python tools/render_paper.py        # 4. regenerate README results
+uv run ruff check pychd tests              # 5. lint
+uv run ty check pychd tests                # 6. type check
 ```
 
-The corpora are downloaded from PyPI and GitHub, **not** committed to
-this repository (per the published-paper convention of not vendoring
-third-party code). The download is idempotent: re-runs reuse the
-`/tmp/pychd-corpora/` cache; pass `--force` to refresh.
-
-A short summary of every command exposed by the task runner:
+The task runner exposes every primitive:
 
 | Command | What it does |
 |---|---|
@@ -402,112 +558,98 @@ A short summary of every command exposed by the task runner:
 | `just fix` | `ruff check --fix` + `ruff format` |
 | `just test` | `pytest tests/ -v` |
 | `just ci` | `lint` + `test` (the gate prek runs on push) |
-| `just bench-setup` | Build all corpora into `/tmp/pychd-corpora/` |
-| `just bench-stdlib` / `bench-pypi` / `bench-cursor` | One corpus benchmark |
-| `just bench` | All corpus benchmarks |
-| `just paper` | **Full reproducibility**: bench-setup + test + benchmark + render |
-| `just compile <path>` / `decompile <path>` / `validate <orig> <recovered>` | CLI shortcuts |
-| `just release <version>` | Tag + push (triggers PyPI publish workflow) |
+| `just bench` | Build all corpora + run all benchmarks |
+| `just bench-stdlib` / `bench-pypi` / `bench-cursor` | One corpus |
+| `just bench-versions` | Compile a sample with every locally-installed Python and verify pychd detects each `.pyc` |
+| `just paper` | Full reproduction (corpora + tests + lint + type + render) |
+| `just compile <path>` / `decompile <path>` / `validate <orig> <rec>` | CLI shortcuts |
 
-## 8. Related work
+To exercise cross-version detection on real `.pyc` files:
 
-| Tool | Year | Python target | Strategy | Public dataset |
-|---|---|---|---|---|
-| [`uncompyle6`](https://pypi.org/project/uncompyle6/) | 2015– | ≤ 3.8 | Hand-written PL grammar | — |
-| [`decompyle3`](https://github.com/rocky/python-decompile3) | 2020– | 3.7 – 3.8 | Fork of uncompyle6 | — |
-| [`pycdc`](https://github.com/zrax/pycdc) | 2014– | varies | C++ pattern parser | — |
-| [PyFET](https://userlab.utk.edu/publications/ahad2023pyfet) (S&P 2023) | 2023 | ≤ 3.9 → 3.8 | Bytecode rewriting to unblock legacy decompilers | 17,117 malware samples |
-| [PyLingual](https://kangkookjee.io/wp-content/uploads/2024/11/pylingual.pdf) | 2024 | 3.6 – 3.12 | NLP segmentation + statement translation (BERT) | CSN · PyPI · VirusTotal · PyLingual.io |
-| [ByteCodeLLM](https://www.cyberark.com/resources/threat-research-blog/bytecodellm-privacy-in-the-llm-era-byte-code-to-source-code) | 2024 | ≤ 3.13 | End-to-end local LLM | (not released) |
-| **PyChD (this work)** | **2026** | **3.14** (rules) · any (LLM-only fallback) | **Rule-based IR + targeted LLM body fill** | stdlib · PyPI · HumanEval · cursor-sdk (committed in `tools/`) |
+```bash
+uv run python tools/build_multiversion_fixtures.py
+# compiles a sample with every locally-installed Python 3.x and emits
+# /tmp/pychd-multiversion/sample-3.X.pyc.
 
-What PyChD adds over prior work:
-
-1. **First decompiler to handle Python 3.14.** Specifically: PEP 749
-   lazy annotation closures (recovered for both module- and
-   class-scope), `CALL_INTRINSIC_1` (replacement for the legacy
-   `IMPORT_STAR` opcode), `LIST_EXTEND` / `SET_UPDATE` / `DICT_UPDATE`
-   constant-folding optimisations, name-mangling reversal,
-   `STORE_GLOBAL` import targets, and the new MAKE_FUNCTION /
-   SET_FUNCTION_ATTRIBUTE split.
-2. **Explicit IR boundary between rule and LLM passes.** Rules
-   produce a typed IR with `UnknownBlock` markers; the LLM is invoked
-   *only* on those markers with the recovered signature as context.
-   This is cheaper (function-body sized prompts) and safer (rule-pass
-   guarantees are observable).
-3. **Three-tier evaluation metric.** Signature / declaration / strict
-   match rather than a single binary "perfect decompilation" rate
-   that conflates compiler-normalised cosmetic differences with real
-   recovery failures.
-4. **Skeptic-in-the-loop methodology.** Adversarial review built into
-   the development process; documented in §6 above.
-
-## 9. Limitations and future work
-
-- **Function bodies** are entirely LLM territory. A v2 rule pass for
-  trivial bodies (`return`, attribute access, single-expression
-  comprehensions) would lift `strict_match` substantially.
-- **Annotation recovery from `__annotate__` closures** currently
-  handles simple-name annotations and falls back to `...` for complex
-  expressions (`Dict[str, list[int]]`). The attribute *name* survives;
-  the annotation *type expression* does not.
-- **Control flow** at module level (`if TYPE_CHECKING:`, `try/except
-  ImportError:`) is flattened rather than re-emitted as `If` / `Try`
-  IR nodes. Imports inside still survive (so `signature_match` is
-  unaffected), but the rendered source is at the wrong indentation.
-- **Pre-3.14 .pyc files** automatically fall back to LLM-only mode.
-  Adding a 3.12/3.13 rule pass is mechanical but tedious — the
-  bytecode spec changes every minor release.
-- **Cross-decompiler head-to-head**: a fair comparison against
-  uncompyle6 / decompyle3 / pycdc would require a Python ≤ 3.8 corpus
-  (those tools don't support 3.14). Future work.
-
-## 10. Project layout
-
-```
-pychd/
-├── ir.py             # IR dataclasses + render()
-├── rules.py          # bytecode → IR, the rule-based extractor
-├── decompile.py      # hybrid pipeline + CLI glue
-├── compile.py        # py_compile wrapper
-├── validate.py       # AST-based diff (with --ignore-annotations)
-└── main.py           # argparse entry point
-
-tests/
-├── test_ir.py             # IR node renderers
-├── test_rules.py          # rule extractor unit tests
-├── test_chunking.py       # LLM disassembly chunking
-├── test_compile.py        # compile pipeline
-├── test_decompile.py      # pipeline integration (mocked LLM)
-├── test_validate.py       # AST diff
-├── test_e2e_stdlib.py     # stdlib-style end-to-end recovery
-├── test_cursor_sdk.py     # real-world fixture: cursor-sdk modules
-└── test_syntax_coverage.py  # 86-construct Python 3.14 matrix
-
-tools/
-├── build_corpora.py       # builds all 6 corpora into /tmp/pychd-corpora/
-├── benchmark.py           # per-corpus measurement + JSON output
-└── render_paper.py        # generates README §5.3 from a fresh benchmark
+uv run pytest tests/test_versions.py -v
+# 20 tests, including integration tests over every fixture.
 ```
 
-## 11. Citing
+## Skeptic-in-the-loop methodology
+
+pychd's metric design and prioritisation came from two rounds of
+**adversarial skeptic review** — an LLM agent prompted to push back
+on local-optimum risks before any code was written. Highlights:
+
+- *Round 1*: argued that strict `ast.dump` skeleton-match was the
+  wrong headline metric (CPython compiler-normalised docstrings
+  cannot be losslessly recovered by *any* decompiler). Proposed the
+  three-tier signature / declaration / strict breakdown. The
+  redefinition alone moved the headline from 9.4% → 47.5% with
+  zero code changes.
+- *Round 1* also ranked five concrete rule fixes by "files
+  unlocked per LoC of patch". All five were implemented.
+- *Round 2*: validated the new metric is honest (not gaming),
+  identified that `@dataclass`-decorated classes were
+  double-emitting `Foo = ...` lines, and confirmed PEP 749
+  annotation recovery was in fact the largest remaining unlock once
+  that decoration bug was fixed.
+
+## Limitations and roadmap
+
+- **Function bodies** are entirely LLM territory in v1. A v2 rule
+  pass for trivial bodies (`return X`, single attribute access,
+  single-expression comprehensions) is the next major lift.
+- **Annotation expression recovery** currently handles simple-name
+  annotations (`x: int`) and falls back to `...` for complex
+  expressions (`Dict[str, list[int]]`). The attribute *name*
+  survives; the *type expression* does not.
+- **Class decorators with arguments** (`@dataclass(frozen=True)`)
+  are detected and consumed (the class itself is recovered with
+  its correct name) but the decorator expression itself is
+  dropped.
+- **Module-level control flow** (`if TYPE_CHECKING:`,
+  `try/except ImportError:`) is flattened rather than re-emitted
+  as `If`/`Try` IR nodes. Imports inside survive (`signature_match`
+  is unaffected), but the rendered source is at the wrong
+  indentation.
+- **Older Python versions** route to the LLM-only path. Adding a
+  3.13 rule pass is mechanical (bytecode is ~95% identical to 3.14
+  modulo `LOAD_SMALL_INT` → `LOAD_CONST`). Earlier versions are
+  progressively harder.
+
+## Related work
+
+| Tool | Year | Python target | Strategy |
+|---|---|---|---|
+| [`uncompyle6`](https://pypi.org/project/uncompyle6/) | 2015– | ≤ 3.8 | Hand-written PL grammar |
+| [`decompyle3`](https://github.com/rocky/python-decompile3) | 2020– | 3.7–3.8 | Fork of uncompyle6 |
+| [`pycdc`](https://github.com/zrax/pycdc) | 2014– | varies | C++ pattern parser |
+| [PyFET](https://userlab.utk.edu/publications/ahad2023pyfet) (S&P 2023) | 2023 | ≤ 3.9 → 3.8 | Bytecode rewriting to unblock legacy decompilers |
+| [PyLingual](https://kangkookjee.io/wp-content/uploads/2024/11/pylingual.pdf) | 2024 | 3.6–3.12 | NLP segmentation + statement translation (BERT) |
+| [ByteCodeLLM](https://www.cyberark.com/resources/threat-research-blog/bytecodellm-privacy-in-the-llm-era-byte-code-to-source-code) | 2024 | ≤ 3.13 | End-to-end local LLM |
+| **pychd** | 2026 | **3.14** rule-based · any version LLM-only | **Rule-based IR + targeted LLM body fill** |
+
+## Citing
+
+This is a tool, not a paper — but if you reference pychd somewhere,
+here's the BibTeX:
 
 ```bibtex
 @software{pychd,
-  author       = {Diohabara},
-  title        = {{PyChD}: A hybrid rule-based and {LLM}-augmented
-                  {P}ython bytecode decompiler targeting {P}ython 3.14},
-  year         = {2026},
-  url          = {https://github.com/diohabara/pychd},
-  note         = {Three-tier evaluation: 99.8\% signature match,
-                  99.6\% declaration match across 1{,}217 modules,
-                  rule-only mode, no LLM. Residual 0.2\% explained
-                  by CPython constant-folded ``if False:'' blocks
-                  (fundamentally unrecoverable).}
+  author = {Diohabara},
+  title  = {{pychd}: A hybrid rule-based and {LLM}-augmented {P}ython
+            bytecode decompiler targeting {P}ython 3.14},
+  year   = {2026},
+  url    = {https://github.com/diohabara/pychd},
+  note   = {Three-tier evaluation: 99.8\% signature match, 99.6\%
+            declaration match across 1{,}217 modules (rule-only,
+            no LLM). Residual 0.2\% explained by CPython
+            constant-folded ``if False:'' blocks.}
 }
 ```
 
-### Cited related work
+Related work whose evaluation methodology pychd borrows from:
 
 ```bibtex
 @inproceedings{pylingual2024,
@@ -554,7 +696,7 @@ tools/
 }
 ```
 
-## 12. License
+## License
 
 See [LICENSE](LICENSE). Code: MIT. The bundled `cursor-sdk` fixtures
 (downloaded on-demand into `/tmp`, not committed) retain their own
