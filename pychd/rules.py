@@ -1,15 +1,27 @@
 """Rule-based partial decompiler: bytecode → IR.
 
-Operates on a code object produced by the *current* running interpreter
-(`marshal.load` from a .pyc compiled for this Python version). The goal
-is to recover the structural skeleton of a module — imports, function and
-class signatures, docstrings, simple module-level constants — without
-LLM assistance, while leaving function bodies as ``UnknownBlock`` IR
-nodes for a downstream LLM pass to fill in.
+Two passes ship in pychd:
 
-Currently implements rules for **Python 3.14**. Other versions raise
-``UnsupportedVersionError``; the caller should fall back to the
-LLM-only pipeline.
+1. **Native 3.14 pass** (this module). Operates on a stdlib
+   :class:`types.CodeType` produced by the *currently running*
+   interpreter — typically a ``.pyc`` whose magic number matches
+   :data:`sys.version_info`. Recovers the full module skeleton:
+   imports, function and class signatures, docstrings, simple
+   module-level constants, PEP 749 lazy annotations, PEP 695 generic
+   type-parameter syntax, decorators, and dotted bases. Function
+   bodies remain as :class:`pychd.ir.UnknownBlock` for the LLM pass.
+
+2. **Cross-version pass** (:mod:`pychd.cross_version`). Operates on an
+   :mod:`xdis` code object for any other CPython 3.x release.
+   Restricts itself to declaration-shaped opcode patterns that have
+   been stable across every Python 3 release (``IMPORT_NAME``,
+   ``MAKE_FUNCTION``, ``LOAD_BUILD_CLASS``, ``STORE_NAME``…).
+   Intentionally lower-fidelity — defaults / annotations / decorator
+   arguments are dropped — in exchange for working on every release.
+
+The :func:`supported_version` helper reports whether *either* pass
+will handle a given ``(major, minor)`` tuple; the caller in
+:mod:`pychd.decompile` dispatches between the two automatically.
 """
 
 from __future__ import annotations
@@ -68,15 +80,31 @@ class RuleResult:
 
 
 def supported_version(version_tuple: tuple) -> bool:
-    """Return True if the rule engine handles this Python version."""
-    return version_tuple[:2] == (3, 14)
+    """Return True if *some* rule pass handles this Python version.
+
+    The native 3.14 pass requires the running interpreter to be 3.14
+    *and* the .pyc to have been compiled for 3.14. Every other
+    CPython 3.x release is handled by the cross-version pass in
+    :mod:`pychd.cross_version`, provided xdis ships an opcode module
+    for it (every release since 3.0 does).
+    """
+    from pychd import cross_version
+
+    if version_tuple[:2] == (3, 14) and sys.version_info[:2] == (3, 14):
+        return True
+    return cross_version.supports(version_tuple)
+
+
+def native_supported(version_tuple: tuple) -> bool:
+    """True iff the *native* 3.14 walker can handle this bytecode."""
+    return version_tuple[:2] == (3, 14) and sys.version_info[:2] == (3, 14)
 
 
 def extract_module(code: CodeType) -> RuleResult:
-    """Extract an `ir.Module` from a module-level code object."""
+    """Extract an `ir.Module` from a *native* module-level code object."""
     if sys.version_info[:2] != (3, 14):  # pragma: no cover - env guard
         raise UnsupportedVersionError(
-            f"Rule engine targets Python 3.14, got {sys.version_info[:2]}"
+            f"Native rule pass targets Python 3.14, got {sys.version_info[:2]}"
         )
 
     walker = _Walker(code)
@@ -434,19 +462,26 @@ class _Context:
             store_name = self.ins[self.pos].argval
             self._consume(1)
             self.pos += 1
-        del self.stack[sent_pos_in_stack:]
-
-        # Discard the decorator values that were sitting on the stack
-        # below the LOAD_BUILD_CLASS sentinel. We can't reliably name
-        # them yet (e.g. ``dataclass(frozen=True)`` is a call result),
-        # so they're consumed silently — class structure still survives.
-        for _ in range(decorator_calls):
-            if self.stack:
-                self.stack.pop()
+        # The class's decorator values sit on the stack *below* the
+        # LOAD_BUILD_CLASS sentinel: each decorator-application CALL
+        # consumes one. Slice them out in their original (top-down)
+        # source order. Previously discarded silently; now we render
+        # each one if possible so ``@dataclass(frozen=True)`` survives
+        # the round-trip.
+        deco_start = max(0, sent_pos_in_stack - decorator_calls)
+        deco_vals = self.stack[deco_start:sent_pos_in_stack]
+        decorators: list[str] = []
+        for value in deco_vals:
+            rendered = _render_value(value)
+            if rendered is not None:
+                decorators.append(rendered)
+        # Remove both the decorator values and the sentinel itself.
+        del self.stack[deco_start:]
 
         class_def = _build_class(
             candidate_code, store_name or class_name or "Anon", bases, keywords
         )
+        class_def.decorators = decorators + class_def.decorators
         self.body.append(class_def)
         return True
 
@@ -530,8 +565,21 @@ class _Context:
 
         decorators: list[str] = []
         for _ in range(decorator_count):
-            if self.stack and isinstance(self.stack[-1], _Name):
-                decorators.append(self.stack.pop().name)
+            if not self.stack:
+                break
+            value = self.stack.pop()
+            if isinstance(value, _Name):
+                decorators.append(value.name)
+            elif isinstance(value, _CallExpr):
+                decorators.append(value.text)
+            elif isinstance(value, _Sentinel):
+                # Opaque value (e.g. nested call we couldn't render):
+                # drop silently rather than emitting a placeholder.
+                continue
+            else:
+                rendered = _render_value(value)
+                if rendered is not None:
+                    decorators.append(rendered)
         decorators.reverse()
 
         func_def = _build_function(
@@ -593,7 +641,14 @@ class _Context:
             self.pos += 1
         if inner_code is None:
             return True
-        if inner_code.co_flags & 0x02 == 0 and any(
+        # CO_NEWLOCALS (0x02) is *clear* on a class body and *set* on a
+        # function. We previously wrote ``& 0x02 == 0`` without parens,
+        # which Python parses as ``& (0x02 == 0)`` → always ``& 0`` →
+        # always falsy. The heuristic below was therefore the only
+        # discriminator in practice. Parenthesising restores the
+        # intended bitwise test as a fast path, with the qualname
+        # heuristic as fallback.
+        if (inner_code.co_flags & 0x02) == 0 and any(
             isinstance(c, CodeType) and c.co_name == "__build_class__"
             for c in wrapper_code.co_consts
         ):
@@ -836,8 +891,31 @@ class _Context:
         op = self.ins[self.pos].opname
         if op == "CALL":
             argc = self.ins[self.pos].arg or 0
-            self._pop_n(argc + 1)
-            self.stack.append(_Sentinel("call_result"))
+            popped = self._pop_n(argc + 1)
+            rendered = _try_render_call(popped, kw_names=None)
+            if rendered is not None:
+                self.stack.append(_CallExpr(rendered))
+            else:
+                self.stack.append(_Sentinel("call_result"))
+            self._consume(1)
+            self.pos += 1
+            return True
+        if op == "CALL_KW":
+            argc = self.ins[self.pos].arg or 0
+            popped = self._pop_n(argc + 2)
+            kw_names: tuple | None = None
+            if (
+                popped
+                and isinstance(popped[-1], _Literal)
+                and isinstance(popped[-1].value, tuple)
+            ):
+                kw_names = popped[-1].value
+                popped = popped[:-1]
+            rendered = _try_render_call(popped, kw_names=kw_names)
+            if rendered is not None:
+                self.stack.append(_CallExpr(rendered))
+            else:
+                self.stack.append(_Sentinel("call_result"))
             self._consume(1)
             self.pos += 1
             return True
@@ -888,9 +966,12 @@ def _build_function(
     # `has_annotations` is captured today only as a marker — annotation
     # recovery from the lazy `__annotate__` closure is a v2 task.
     _ = has_annotations
-    body: list[ir.Stmt] = [
-        ir.UnknownBlock(disassembly=_dis_text(code), signature=f"def {name}")
-    ]
+    trivial = _try_recover_trivial_body(code, has_docstring=docstring is not None)
+    body: list[ir.Stmt]
+    if trivial is not None:
+        body = [ir.RawStatement(source=trivial)]
+    else:
+        body = [ir.UnknownBlock(disassembly=_dis_text(code), signature=f"def {name}")]
     return ir.FunctionDef(
         name=name,
         args=args,
@@ -901,6 +982,129 @@ def _build_function(
         body=body,
         return_annotation=None,
     )
+
+
+# Opcodes that introduce a value the trivial-body recogniser knows how to
+# render symbolically. Anything outside this set bails to UnknownBlock.
+_TRIVIAL_PROLOGUE = frozenset(
+    {"RESUME", "MAKE_CELL", "COPY_FREE_VARS", "CACHE", "EXTENDED_ARG", "NOT_TAKEN"}
+)
+
+
+def _try_recover_trivial_body(code: CodeType, *, has_docstring: bool) -> str | None:
+    """Recover the body of a function whose entire payload is one statement.
+
+    Handles the common closed-form cases that account for the bulk of
+    one-line definitions in real codebases:
+
+    * ``return CONST`` — emitted as either ``RETURN_CONST x`` (Python
+      3.12+) or ``LOAD_CONST x ; RETURN_VALUE``.
+    * ``return name`` / ``return self.attr.attr2`` — a single
+      ``LOAD_FAST`` / ``LOAD_NAME`` / ``LOAD_GLOBAL`` /
+      ``LOAD_DEREF`` (possibly with ``LOAD_FAST_BORROW`` on 3.14)
+      followed by zero or more ``LOAD_ATTR`` and ending in
+      ``RETURN_VALUE``.
+    * ``pass`` — the entire body collapses to ``LOAD_CONST None ;
+      RETURN_VALUE`` once the docstring (if any) is skipped.
+
+    Anything else returns ``None`` and the body becomes an
+    ``UnknownBlock`` for the LLM pass to handle.
+
+    The result is the *body source*, indented with 4 spaces and ready
+    to splice into the rendered function definition.
+    """
+    if code.co_flags & (CO_GENERATOR | CO_COROUTINE | CO_ASYNC_GENERATOR):
+        # Generators / coroutines have implicit prologue (RETURN_GENERATOR)
+        # and the body is not simply ``return X``.
+        return None
+    if code.co_freevars:
+        # A function with free variables closes over an outer scope.
+        # A bare ``return name`` recovered here would be lexically wrong
+        # — the rendered standalone function has no enclosing scope to
+        # bind ``name`` to. Defer to the LLM body-fill rather than
+        # emit code that parses but is semantically broken at runtime.
+        return None
+
+    instructions = [
+        ins for ins in dis.Bytecode(code) if ins.opname not in _TRIVIAL_PROLOGUE
+    ]
+    if not instructions:
+        return None
+
+    # Skip the docstring's LOAD_CONST + POP_TOP, if any.
+    if (
+        has_docstring
+        and len(instructions) >= 2
+        and instructions[0].opname == "LOAD_CONST"
+        and isinstance(instructions[0].argval, str)
+        and instructions[1].opname == "POP_TOP"
+    ):
+        instructions = instructions[2:]
+        if not instructions:
+            return None
+
+    # ``return CONST`` via the 3.12+ fused opcode.
+    if len(instructions) == 1 and instructions[0].opname == "RETURN_CONST":
+        return f"return {_format_literal(instructions[0].argval)}"
+
+    # Locate the trailing RETURN_VALUE if present.
+    if instructions[-1].opname != "RETURN_VALUE":
+        return None
+    head = instructions[:-1]
+    if not head:
+        return None
+
+    # ``pass`` / no body: just ``LOAD_CONST None``.
+    if (
+        len(head) == 1
+        and head[0].opname in {"LOAD_CONST", "LOAD_COMMON_CONSTANT"}
+        and head[0].argval is None
+    ):
+        return "pass"
+
+    # ``return <literal>`` — direct constant load.
+    if len(head) == 1 and head[0].opname in {
+        "LOAD_CONST",
+        "LOAD_SMALL_INT",
+        "LOAD_COMMON_CONSTANT",
+    }:
+        return f"return {_format_literal(head[0].argval)}"
+
+    # ``return name(.attr)*`` — a single name push optionally extended by
+    # attribute loads.
+    expr = _try_render_name_chain(head)
+    if expr is not None:
+        return f"return {expr}"
+
+    return None
+
+
+def _try_render_name_chain(instructions: list[dis.Instruction]) -> str | None:
+    """Render ``LOAD_X name; LOAD_ATTR a; LOAD_ATTR b`` as ``name.a.b``."""
+    if not instructions:
+        return None
+    head = instructions[0]
+    # ``LOAD_DEREF`` is intentionally excluded: a deref read targets a
+    # closure-bound free variable, which a standalone rendered function
+    # cannot resolve. ``_try_recover_trivial_body`` guards against
+    # ``co_freevars`` to keep that path safe end-to-end.
+    if head.opname not in {
+        "LOAD_FAST",
+        "LOAD_FAST_BORROW",
+        "LOAD_NAME",
+        "LOAD_GLOBAL",
+    }:
+        return None
+    name = str(head.argval)
+    # LOAD_GLOBAL's argval on 3.11+ is the actual name; on older versions
+    # the high bit encoded a PUSH_NULL flag, but xdis normalises this.
+    parts = [name]
+    for ins in instructions[1:]:
+        if ins.opname == "LOAD_ATTR":
+            parts.append(str(ins.argval))
+        else:
+            return None
+    return ".".join(parts)
 
 
 def _unmangle(name: str, class_name: str) -> str:
@@ -1044,16 +1248,24 @@ def _find_annotate_code(code: CodeType) -> CodeType | None:
 def _extract_annotations_from_annotate(parent: CodeType) -> list[tuple[str, str]]:
     """Walk a ``__annotate__`` closure and return ``[(attr, annotation), …]``.
 
-    PEP 749 emits one annotation entry per attribute as the sequence:
+    PEP 749 emits one annotation entry per attribute, with the simplest
+    shape being::
 
         LOAD_FROM_DICT_OR_GLOBALS <annotation_name>
         COPY 2
         LOAD_CONST <attr_name>
         STORE_SUBSCR
 
-    More complex annotations (``list[int]``, ``str | None``…) require
-    deeper interpretation; for v1 we keep simple-name annotations and
-    fall back to a stringified placeholder for the rest.
+    More complex annotations build a subscripted / piped expression on
+    the stack before the ``LOAD_CONST <attr_name> ; STORE_SUBSCR``
+    closing pair. We run a small symbolic interpreter over the segment
+    between each declaration's leading boundary marker and its
+    ``STORE_SUBSCR`` to recover the full expression source:
+
+    * ``Dict[str, list[int]]`` → ``Dict[str, list[int]]``
+    * ``str | None`` → ``str | None``
+    * unrecognised shapes still emit the attribute name with ``...``
+      as the annotation so the ``AnnAssign`` node survives.
     """
     annotate = _find_annotate_code(parent)
     if annotate is None:
@@ -1061,41 +1273,189 @@ def _extract_annotations_from_annotate(parent: CodeType) -> list[tuple[str, str]
     instructions = list(dis.Bytecode(annotate))
     out: list[tuple[str, str]] = []
 
-    # Each annotation declaration ends with ``LOAD_CONST <attr_name> ;
-    # STORE_SUBSCR``. We scan for that pair and back up at most a few
-    # instructions to identify the annotation value:
-    #
-    #   - simple name:        LOAD_FROM_DICT_OR_GLOBALS / LOAD_GLOBAL X ; COPY 2 …
-    #   - quoted (PEP 563):   LOAD_CONST 'X' ; COPY 2 …
-    #   - complex expression: anything else — recover attr name only,
-    #                         annotation rendered as ``...`` so that the
-    #                         AnnAssign node is still emitted.
-    #
-    # ``COPY 2`` may also be ``COPY 1`` / fused / absent in synthetic
-    # cases; treat as optional.
+    # Locate every ``LOAD_CONST <attr> ; STORE_SUBSCR`` pair — each
+    # marks the *end* of one annotation declaration.
+    boundary = 0
     for i in range(len(instructions) - 1):
-        if (
+        if not (
             instructions[i].opname == "LOAD_CONST"
             and isinstance(instructions[i].argval, str)
             and instructions[i + 1].opname == "STORE_SUBSCR"
         ):
-            attr = instructions[i].argval
-            ann = "..."
-            # Look back up to 4 instructions for an annotation loader.
-            for j in range(i - 1, max(-1, i - 5), -1):
-                op = instructions[j].opname
-                if op in {"LOAD_FROM_DICT_OR_GLOBALS", "LOAD_GLOBAL", "LOAD_NAME"}:
-                    ann = str(instructions[j].argval)
-                    break
-                if op == "LOAD_CONST" and isinstance(instructions[j].argval, str):
-                    ann = instructions[j].argval
-                    break
-                if op == "BINARY_SUBSCR" or op == "BINARY_OP":
-                    # Complex annotation expression — we still want the
-                    # attribute name in the output, just not the type.
-                    break
-            out.append((attr, ann))
+            continue
+        attr = instructions[i].argval
+        # The annotation expression occupies the slice ``[boundary, i)``;
+        # we drop the trailing ``COPY 2`` (or COPY 1, COPY 3) that
+        # duplicates the annotations dict, and the trailing
+        # ``LOAD_NAME __annotations__`` that pushed the dict onto the
+        # stack. Whatever remains is the expression we want to render.
+        segment = _strip_annotation_envelope(instructions[boundary:i])
+        rendered = _render_annotation_segment(segment)
+        out.append((attr, rendered if rendered is not None else "..."))
+        boundary = i + 2
     return out
+
+
+_ANNOT_DICT_NAMES = frozenset({"__annotations__", "__classdict__"})
+
+
+def _strip_annotation_envelope(
+    segment: list[dis.Instruction],
+) -> list[dis.Instruction]:
+    """Drop scaffold opcodes that wrap each annotation declaration.
+
+    PEP 749's ``__annotate__`` body opens with a
+    ``format > 2: raise NotImplementedError`` prelude (the formatting
+    mode check) and wraps every declaration with the boilerplate that
+    pushes the annotations dict (``LOAD_NAME __annotations__`` /
+    ``LOAD_DEREF __classdict__``) and ``COPY``-s it under the
+    annotation value before the closing ``STORE_SUBSCR``. We strip
+    every such scaffold opcode so the remaining instructions form
+    exactly the user-written annotation expression.
+    """
+    out: list[dis.Instruction] = []
+    for ins in segment:
+        op = ins.opname
+        if op in {
+            "COPY",
+            "COPY_FREE_VARS",
+            "EXTENDED_ARG",
+            "CACHE",
+            "RESUME",
+            "NOT_TAKEN",
+            "MAKE_CELL",
+            "BUILD_MAP",
+            "POP_JUMP_IF_FALSE",
+            "POP_JUMP_IF_TRUE",
+            "POP_JUMP_FORWARD_IF_FALSE",
+            "POP_JUMP_FORWARD_IF_TRUE",
+            "POP_JUMP_BACKWARD_IF_FALSE",
+            "POP_JUMP_BACKWARD_IF_TRUE",
+            "COMPARE_OP",
+            "RAISE_VARARGS",
+            "LOAD_COMMON_CONSTANT",
+        }:
+            continue
+        if (
+            op
+            in {
+                "LOAD_NAME",
+                "LOAD_DEREF",
+                "LOAD_FAST",
+                "LOAD_FAST_BORROW",
+            }
+            and ins.argval in _ANNOT_DICT_NAMES
+        ):
+            continue
+        if op == "LOAD_FAST_BORROW" and ins.argval == "format":
+            # The PEP 749 format flag pushed at the head of every
+            # ``__annotate__`` closure — not part of the user expression.
+            continue
+        if op == "LOAD_SMALL_INT" and ins.argval == 2:
+            # The literal ``2`` only ever appears as the rhs of the
+            # ``format > 2`` prelude check; never inside annotations.
+            continue
+        out.append(ins)
+    return out
+
+
+def _render_annotation_segment(
+    segment: list[dis.Instruction],
+) -> str | None:
+    """Render an annotation expression by symbolically executing *segment*."""
+    if not segment:
+        return None
+    stack: list[str] = []
+    for ins in segment:
+        op = ins.opname
+        if op in {"LOAD_FROM_DICT_OR_GLOBALS", "LOAD_GLOBAL", "LOAD_NAME"}:
+            stack.append(str(ins.argval))
+        elif op in {"LOAD_DEREF", "LOAD_FAST", "LOAD_FAST_BORROW"}:
+            stack.append(str(ins.argval))
+        elif op == "LOAD_CONST":
+            stack.append(_format_literal(ins.argval))
+        elif op == "LOAD_SMALL_INT":
+            stack.append(_format_literal(ins.argval))
+        elif op == "LOAD_ATTR":
+            if not stack:
+                return None
+            stack[-1] = f"{stack[-1]}.{ins.argval}"
+        elif op == "BINARY_SUBSCR":
+            if len(stack) < 2:
+                return None
+            idx = stack.pop()
+            base = stack.pop()
+            stack.append(f"{base}[{idx}]")
+        elif op == "BUILD_TUPLE":
+            n = ins.arg or 0
+            if n > len(stack):
+                return None
+            items = stack[-n:] if n else []
+            del stack[-n:]
+            if n == 0:
+                stack.append("()")
+            elif n == 1:
+                stack.append(f"({items[0]},)")
+            else:
+                stack.append(", ".join(items))
+        elif op == "BUILD_LIST":
+            n = ins.arg or 0
+            if n > len(stack):
+                return None
+            items = stack[-n:] if n else []
+            del stack[-n:]
+            stack.append("[" + ", ".join(items) + "]")
+        elif op == "BUILD_SET":
+            n = ins.arg or 0
+            if n > len(stack):
+                return None
+            items = stack[-n:] if n else []
+            del stack[-n:]
+            stack.append("{" + ", ".join(items) + "}" if items else "set()")
+        elif op == "BINARY_OP":
+            if len(stack) < 2:
+                return None
+            rhs = stack.pop()
+            lhs = stack.pop()
+            # Python 3.14 emits subscription as ``BINARY_OP 26 ('[]')``
+            # instead of the dedicated ``BINARY_SUBSCR`` opcode; render
+            # accordingly. All other binary ops in annotations are
+            # standard infix operators looked up by their argrepr.
+            if (ins.argrepr or "") == "[]":
+                stack.append(f"{lhs}[{rhs}]")
+            else:
+                symbol = _BINARY_OP_SYMBOLS.get(ins.argrepr or "", None)
+                if symbol is None:
+                    return None
+                stack.append(f"{lhs} {symbol} {rhs}")
+        elif op in {"PUSH_NULL", "RESUME", "MAKE_CELL", "RETURN_VALUE"}:
+            continue
+        else:
+            return None
+    if len(stack) != 1:
+        return None
+    return stack[0]
+
+
+# Map ``BINARY_OP``'s ``argrepr`` strings (as exposed by dis) back to
+# their source-level operator. Only the operators that appear in
+# annotation expressions matter — arithmetic and ``|`` for PEP 604
+# union types.
+_BINARY_OP_SYMBOLS = {
+    "|": "|",
+    "&": "&",
+    "^": "^",
+    "+": "+",
+    "-": "-",
+    "*": "*",
+    "/": "/",
+    "//": "//",
+    "%": "%",
+    "**": "**",
+    "<<": "<<",
+    ">>": ">>",
+    "@": "@",
+}
 
 
 def _splice_annotations(
@@ -1271,11 +1631,73 @@ class _FunctionValue:
     has_annotations: bool
 
 
+@dataclass
+class _CallExpr:
+    """A call expression already rendered as Python source.
+
+    Produced by the ``CALL`` / ``CALL_KW`` dispatchers when both the
+    callable and every argument can be rendered. Used by the class
+    and function definition rules to recover decorator-with-args
+    expressions like ``@dataclass(frozen=True)`` — when these
+    expressions sit below the LOAD_BUILD_CLASS sentinel, they are
+    captured as decorator strings before being consumed by the
+    decorator-application ``CALL`` opcodes.
+    """
+
+    text: str
+
+
+def _try_render_call(popped: list, *, kw_names: tuple | None) -> str | None:
+    """Render ``callable(arg1, arg2, kw=val)`` from popped stack values.
+
+    *popped* is in stack-bottom-first order: ``[callable, *positional]``.
+    *kw_names* contains the trailing keyword names (for CALL_KW); the
+    last ``len(kw_names)`` entries of *popped* are the keyword values.
+
+    Returns ``None`` if any component cannot be rendered — the caller
+    then falls back to the opaque ``_Sentinel`` model.
+    """
+    if not popped:
+        return None
+    callable_v = popped[0]
+    if isinstance(callable_v, _Name):
+        callable_str = callable_v.name
+    elif isinstance(callable_v, _CallExpr):
+        callable_str = callable_v.text
+    else:
+        return None
+    raw_args = popped[1:]
+    if kw_names:
+        kw_count = len(kw_names)
+        if kw_count > len(raw_args):
+            return None
+        kw_vals = raw_args[-kw_count:]
+        pos_vals = raw_args[:-kw_count]
+    else:
+        kw_vals = []
+        pos_vals = raw_args
+
+    parts: list[str] = []
+    for v in pos_vals:
+        r = _render_value(v)
+        if r is None:
+            return None
+        parts.append(r)
+    for name, v in zip(kw_names or (), kw_vals):
+        r = _render_value(v)
+        if r is None:
+            return None
+        parts.append(f"{name}={r}")
+    return f"{callable_str}({', '.join(parts)})"
+
+
 def _render_value(v: Any) -> str | None:
     if isinstance(v, _Literal):
         return _format_literal(v.value)
     if isinstance(v, _Name):
         return v.name
+    if isinstance(v, _CallExpr):
+        return v.text
     if isinstance(v, _Collection):
         rendered: list[str] = []
         for item in v.items:

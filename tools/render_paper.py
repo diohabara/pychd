@@ -152,27 +152,22 @@ def render(root: Path) -> tuple[str, dict[str, Any]]:
         f"**{_format_pct(grand_str, grand_n)}** |"
     )
 
-    # Mermaid chart
-    sig_pcts = [
-        100 * _agg(all_rows[n], "signature_match") / max(1, len(all_rows[n]))
-        for n, _ in CORPORA
-    ]
-    decl_pcts = [
-        100 * _agg(all_rows[n], "declaration_match") / max(1, len(all_rows[n]))
-        for n, _ in CORPORA
-    ]
-    labels = ", ".join(f'"{n}"' for n, _ in CORPORA)
+    # Pre-rendered SVG references. The figures themselves are generated
+    # by ``tools/render_figures.py`` from the JSON file we write below.
+    # Image-based charts render uniformly on GitHub / PyPI / IDE
+    # previews — the previous Mermaid block did not.
     chart = [
-        "```mermaid",
-        "xychart-beta",
-        '    title "Recovery rate by corpus (rules-only, no LLM)"',
-        f"    x-axis [{labels}]",
-        "    y-axis 0 --> 100",
-        f"    bar [{', '.join(f'{p:.1f}' for p in sig_pcts)}]",
-        f"    line [{', '.join(f'{p:.1f}' for p in decl_pcts)}]",
-        "```",
+        "![Recovery rate by corpus](assets/recovery_by_corpus.svg)",
         "",
-        "Bar = signature match · Line = declaration match.",
+        "Bars = signature match · declaration match · strict match per corpus.",
+        "",
+        "![Rule-pass coverage across CPython 3.x releases]"
+        "(assets/version_coverage.svg)",
+        "",
+        "Every Python 3.x release routes through a rule pass: 3.14 hits"
+        " the **native** walker for full-fidelity recovery, 3.0 – 3.13"
+        " hit the **cross-version** walker for declaration-level"
+        " recovery via xdis.",
     ]
 
     # Failure attribution
@@ -286,6 +281,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--readme", type=Path, default=REPO_ROOT / "README.md")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--json", type=Path, default=None)
+    ap.add_argument(
+        "--render-figures",
+        action="store_true",
+        help=(
+            "Also regenerate the SVG figures under assets/ via"
+            " tools/render_figures.py. Requires the dev dependency"
+            " group (plotly + kaleido)."
+        ),
+    )
+    ap.add_argument(
+        "--skip-comparison",
+        action="store_true",
+        help="Skip the comparative-benchmark step (uncompyle6 / decompyle3).",
+    )
     args = ap.parse_args(argv)
 
     _ensure_corpora(args.corpora_root)
@@ -297,9 +306,33 @@ def main(argv: list[str] | None = None) -> int:
         splice_into_readme(args.readme, block)
         print(f"updated {args.readme}")
 
+    # Always cache the latest results next to the figures so re-rendering
+    # is a no-op when nothing changed.
+    cache_dir = REPO_ROOT / "assets"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "_results.json").write_text(json.dumps(raw, indent=2))
+
     if args.json:
         args.json.write_text(json.dumps(raw, indent=2))
         print(f"wrote {args.json}")
+
+    if not args.skip_comparison:
+        # Best-effort comparison; failure shouldn't break the paper render.
+        try:
+            subprocess.run(
+                ["uv", "run", "python", "tools/compare_decompilers.py"],
+                cwd=REPO_ROOT,
+                check=False,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            print(f"comparison step failed: {e}")
+
+    if args.render_figures:
+        subprocess.run(
+            ["uv", "run", "python", "tools/render_figures.py"],
+            cwd=REPO_ROOT,
+            check=False,
+        )
     return 0
 
 

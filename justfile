@@ -93,18 +93,29 @@ bench-versions:
     uv run python tools/build_multiversion_fixtures.py
     uv run pytest tests/test_versions.py -v
 
+# Run the comparative benchmark (pychd vs uncompyle6 vs decompyle3).
+# Writes assets/_comparison.json consumed by `bench-figures`.
+bench-compare:
+    uv run python tools/compare_decompilers.py
+
+# Render every SVG figure under assets/ from the latest results +
+# comparison JSON. Idempotent — safe to re-run.
+bench-figures:
+    uv run python tools/render_figures.py
+
 # Full reproducibility: build corpora, run all tests + lint + benchmarks,
-# regenerate README's paper-generated block. The single entry point for
-# anyone trying to reproduce the published results.
+# regenerate README's paper-generated block AND every figure under
+# assets/. The single entry point for anyone trying to reproduce the
+# published results.
 paper: setup bench-setup
     uv run pytest tests/ -q
     uv run ruff check pychd tests
     uv run ruff format --check pychd tests
     uv run ty check pychd tests
-    uv run python tools/render_paper.py
+    uv run python tools/render_paper.py --render-figures
     @echo
-    @echo "✅ paper regenerated. README §5.3 is up to date."
-    @echo "   Inspect changes with: git diff README.md"
+    @echo "✅ paper regenerated. README §5.3 + assets/*.svg up to date."
+    @echo "   Inspect changes with: git diff README.md assets/"
 
 # Tag a release and push (triggers the publish workflow).
 release version:

@@ -169,6 +169,23 @@ wheels = [
 ]
 
 [[package]]
+name = "decompyle3"
+version = "3.9.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "spark-parser" },
+    { name = "xdis" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0e/db/a610ef067904ad273cb5fdb020c68bf5d1565a4a2de7f07c25877e462240/decompyle3-3.9.3.tar.gz", hash = "sha256:66cedaea6b998b3711cdc9993254e91e692bc45d18da7e309acade4f3b15173f", size = 873015, upload-time = "2025-10-01T23:03:50.241Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/61/ec0f299cc8e75ad9810d459850ac47cf59b0b5a1b0bcf922bef8831991a0/decompyle3-3.9.3-py3-none-any.whl", hash = "sha256:8e648e8e20b91e2e96780befd0771c9e872fede9c13015032128b6502750b11d", size = 273440, upload-time = "2025-10-01T23:03:49.218Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/19/538f9b82bcc54cb67ec9b9445b75ca24d0b2b5064abe6046381c801bcde2/decompyle3-3.9.3-py37-none-any.whl", hash = "sha256:356b9f8f506a835502d97c893fca8793bbf824998f7efaac39695a54dac5a017", size = 273013, upload-time = "2025-10-01T23:03:44.966Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/ec/c0222370f16125c8ca5f628b87acab42c8efa8a6e381a010cf1efe78524b/decompyle3-3.9.3-py38-none-any.whl", hash = "sha256:f05f82733bfa6b2561f32244b58fbfe2b37f60c0daad23dbd5ccc63fc8a2faaf", size = 273015, upload-time = "2025-10-01T23:03:46.428Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/54/2c2daf4242202151bb1bdd8a96ed82f5497d2d1ea03a87f8966abfc5017e/decompyle3-3.9.3-py39-none-any.whl", hash = "sha256:04590de9fac1d5eb7763261c742b956e0bd73b2991a3f9c320bdaf515241cdca", size = 273028, upload-time = "2025-10-01T23:03:47.831Z" },
+]
+
+[[package]]
 name = "distro"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -438,6 +455,19 @@ wheels = [
 ]
 
 [[package]]
+name = "kaleido"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/f7/0ccaa596ec341963adbb4f839774c36d5659e75a0812d946732b927d480e/kaleido-0.2.1-py2.py3-none-macosx_10_11_x86_64.whl", hash = "sha256:ca6f73e7ff00aaebf2843f73f1d3bacde1930ef5041093fe76b83a15785049a7", size = 85153681, upload-time = "2021-03-08T10:27:34.202Z" },
+    { url = "https://files.pythonhosted.org/packages/45/8e/4297556be5a07b713bb42dde0f748354de9a6918dee251c0e6bdcda341e7/kaleido-0.2.1-py2.py3-none-macosx_11_0_arm64.whl", hash = "sha256:bb9a5d1f710357d5d432ee240ef6658a6d124c3e610935817b4b42da9c787c05", size = 85808197, upload-time = "2021-03-08T10:27:46.561Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/b3/a0f0f4faac229b0011d8c4a7ee6da7c2dca0b6fd08039c95920846f23ca4/kaleido-0.2.1-py2.py3-none-manylinux1_x86_64.whl", hash = "sha256:aa21cf1bf1c78f8fa50a9f7d45e1003c387bd3d6fe0a767cfbbf344b95bdc3a8", size = 79902476, upload-time = "2021-03-08T10:27:57.364Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/2b/680662678a57afab1685f0c431c2aba7783ce4344f06ec162074d485d469/kaleido-0.2.1-py2.py3-none-manylinux2014_aarch64.whl", hash = "sha256:845819844c8082c9469d9c17e42621fbf85c2b237ef8a86ec8a8527f98b6512a", size = 83711746, upload-time = "2021-03-08T10:28:08.847Z" },
+    { url = "https://files.pythonhosted.org/packages/88/89/4b6f8bb3f9ab036fd4ad1cb2d628ab5c81db32ac9aa0641d7b180073ba43/kaleido-0.2.1-py2.py3-none-win32.whl", hash = "sha256:ecc72635860be616c6b7161807a65c0dbd9b90c6437ac96965831e2e24066552", size = 62312480, upload-time = "2021-03-08T10:28:18.204Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/9a/0408b02a4bcb3cf8b338a2b074ac7d1b2099e2b092b42473def22f7b625f/kaleido-0.2.1-py2.py3-none-win_amd64.whl", hash = "sha256:4670985f28913c2d063c5734d125ecc28e40810141bdb0a46f15b76c1d45f23c", size = 65945521, upload-time = "2021-03-08T10:28:26.823Z" },
+]
+
+[[package]]
 name = "litellm"
 version = "1.81.14"
 source = { registry = "https://pypi.org/simple" }
@@ -557,6 +587,15 @@ wheels = [
 ]
 
 [[package]]
+name = "narwhals"
+version = "2.21.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/a0/6198c56d42ef2f3c6ed0c42ba30dbcefdc86a91262d7d449010770ae085b/narwhals-2.21.2.tar.gz", hash = "sha256:5c5b2d0b47aef7c73ea412cfcbcd467f2f2d5be73e3c2ab19d78f4a97718790a", size = 632176, upload-time = "2026-05-16T08:49:08.314Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1d/77/928ea2e70641ca177a11140062cc5840d421795f2e82749d408d0cce900a/narwhals-2.21.2-py3-none-any.whl", hash = "sha256:7bb57c3700486039215455b9bf2d64261915cc0fd845cc30272d631df696b251", size = 451201, upload-time = "2026-05-16T08:49:05.536Z" },
+]
+
+[[package]]
 name = "openai"
 version = "2.21.0"
 source = { registry = "https://pypi.org/simple" }
@@ -582,6 +621,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/65/ee/299d360cdc32edc7d2cf530f3accf79c4fca01e96ffc950d8a52213bd8e4/packaging-26.0.tar.gz", hash = "sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4", size = 143416, upload-time = "2026-01-21T20:50:39.064Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529", size = 74366, upload-time = "2026-01-21T20:50:37.788Z" },
+]
+
+[[package]]
+name = "plotly"
+version = "6.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "narwhals" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3a/7f/0f100df1172aadf88a929a9dbb902656b0880ba4b960fe5224867159d8f4/plotly-6.7.0.tar.gz", hash = "sha256:45eea0ff27e2a23ccd62776f77eb43aa1ca03df4192b76036e380bb479b892c6", size = 6911286, upload-time = "2026-04-09T20:36:45.738Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/90/ad/cba91b3bcf04073e4d1655a5c1710ef3f457f56f7d1b79dcc3d72f4dd912/plotly-6.7.0-py3-none-any.whl", hash = "sha256:ac8aca1c25c663a59b5b9140a549264a5badde2e057d79b8c772ae2920e32ff0", size = 9898444, upload-time = "2026-04-09T20:36:39.812Z" },
 ]
 
 [[package]]
@@ -658,7 +710,7 @@ wheels = [
 
 [[package]]
 name = "pychd"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "litellm" },
@@ -667,10 +719,14 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "decompyle3" },
+    { name = "kaleido" },
+    { name = "plotly" },
     { name = "prek" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "ty" },
+    { name = "uncompyle6" },
 ]
 
 [package.metadata]
@@ -681,10 +737,14 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "decompyle3", specifier = ">=3.9.2" },
+    { name = "kaleido", specifier = "==0.2.1" },
+    { name = "plotly", specifier = ">=5.20" },
     { name = "prek" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "ty", specifier = ">=0.0.39" },
+    { name = "uncompyle6", specifier = ">=3.9.0" },
 ]
 
 [[package]]
@@ -972,6 +1032,21 @@ wheels = [
 ]
 
 [[package]]
+name = "spark-parser"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3c/e1/a443990c6c32cb7fa7d3896405d2924c4921c74c1ffd5b90ffaeb42f778a/spark_parser-1.9.0.tar.gz", hash = "sha256:dc66d48c4265c4133db41a9c5fe9c1c502b3b20167df158a0f234cd31712cf64", size = 80108, upload-time = "2024-10-08T13:51:02.148Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d8/c6/9d34faf67c92e14f1feaa036f6bc8beed0af71af1287060060af1b47bf9c/spark_parser-1.9.0-py310-none-any.whl", hash = "sha256:a1ab71c2df145b21c2c1c8aa5f001e36206bec259ec836504263ab7450881ad1", size = 45955, upload-time = "2024-10-08T13:45:04.437Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/bb/a13ae1bd3d257720e19d5d8a3dfa34cee38c5d9dd59dcb2c001bd0c6c310/spark_parser-1.9.0-py311-none-any.whl", hash = "sha256:30ab1a6005a783ca39f73ad477efb1e12a1cb0123607543e71690d9fd6fecf49", size = 63422, upload-time = "2024-10-08T13:45:05.451Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/9f/771e5add2467b6cadbcb560290bb6d9a4b069c3ca8483181245f5ea2d83e/spark_parser-1.9.0-py312-none-any.whl", hash = "sha256:036b8227c5b09a919a7eae50576f91d533124de1dbf9a9c654a2be5864f1c947", size = 63423, upload-time = "2024-10-08T13:45:07.059Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/3d/074fef587d8c392e4e5d3599670fec88e01ebb5a5ddc1ada05b80f01a921/spark_parser-1.9.0-py313-none-any.whl", hash = "sha256:fc2e188601a6c8f7a68e2d7bd97ca377f6dc271a67607ff11e6beef39d0e9d1d", size = 63427, upload-time = "2024-10-14T10:49:03.625Z" },
+]
+
+[[package]]
 name = "tiktoken"
 version = "0.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1106,6 +1181,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/55/e3/70399cb7dd41c10ac53367ae42139cf4b1ca5f36bb3dc6c9d33acdb43655/typing_inspection-0.4.2.tar.gz", hash = "sha256:ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464", size = 75949, upload-time = "2025-10-01T02:14:41.687Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/9b/47798a6c91d8bdb567fe2698fe81e0c6b7cb7ef4d13da4114b41d239f65d/typing_inspection-0.4.2-py3-none-any.whl", hash = "sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7", size = 14611, upload-time = "2025-10-01T02:14:40.154Z" },
+]
+
+[[package]]
+name = "uncompyle6"
+version = "3.9.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "spark-parser" },
+    { name = "xdis" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/9b/c6ebd89902b60d397b5b992f58013fd0a29eee4ac87e46a7137a9a79b601/uncompyle6-3.9.3.tar.gz", hash = "sha256:78b764d4c843b0455fb39db6deb421a48d5d3ebb846537ba6444afe107c4ebc1", size = 2475497, upload-time = "2025-09-29T11:24:49.229Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/a1/34986d9989501caf794e05f3d893314e209de9fcf7e49f93ae04c1433a74/uncompyle6-3.9.3-py3-none-any.whl", hash = "sha256:c2b059147afb97498b6cc42eb14bd09dea23f513aee957f461d0ab84a02d3c36", size = 358939, upload-time = "2025-09-29T11:24:48.118Z" },
+    { url = "https://files.pythonhosted.org/packages/48/ab/baf6ecbfa3ed1551852e813999220c957b0d585867df466aa631c4829908/uncompyle6-3.9.3-py36-none-any.whl", hash = "sha256:7f3e21e650400ae144d2189a503b8febf9e76bec6b1b9761a78001896dd43672", size = 359145, upload-time = "2025-09-29T11:24:43.858Z" },
+    { url = "https://files.pythonhosted.org/packages/61/e6/e9cfdba0753cdbbb566805279e0c646bcdf9210ef339adb908e16a67afcd/uncompyle6-3.9.3-py38-none-any.whl", hash = "sha256:501d873782b168d9f452a1316ad2caa4ee6853daf594518e6f3e0777cafa4ac8", size = 359123, upload-time = "2025-09-29T11:24:45.643Z" },
+    { url = "https://files.pythonhosted.org/packages/43/1a/57b583724fa2b3b7c70c92e8d7629d0cfcd808ea836272b2d0e33200f207/uncompyle6-3.9.3-py39-none-any.whl", hash = "sha256:88b14b26e361e572a97b1c5092fe4a67102346927b75f52e8a738ed7ef587dbc", size = 359139, upload-time = "2025-09-29T11:24:47.01Z" },
 ]
 
 [[package]]

@@ -23,6 +23,7 @@ from pychd.versions import (
     compatibility_matrix,
     detect_version,
     read_magic,
+    rule_pass_for,
     supported,
 )
 
@@ -46,19 +47,27 @@ class TestKnownVersions:
         assert info.version == (3, 14)
         assert info.rule_supported is True
 
-    def test_pre_3_14_falls_through_to_llm(self):
+    def test_every_python_3_release_is_rule_supported(self):
+        """Cross-version pass handles every 3.x release via xdis."""
         for magic, info in KNOWN_VERSIONS.items():
-            if info.version[:2] < (3, 14):
-                assert info.rule_supported is False, (
-                    f"magic={magic} (Python {info.label}) unexpectedly claims rule "
-                    "support — pychd's rule pass currently targets 3.14 only"
-                )
+            assert info.rule_supported is True, (
+                f"magic={magic} (Python {info.label}) lost rule support — "
+                "regression in cross-version dispatch"
+            )
 
     def test_supported_helper(self):
         assert supported((3, 14)) is True
-        assert supported((3, 13)) is False
-        assert supported((3, 0)) is False
+        assert supported((3, 13)) is True
+        assert supported((3, 0)) is True
         assert supported((2, 7)) is False
+
+    def test_rule_pass_distinguishes_native_vs_cross_version(self):
+        # On a 3.14 interpreter, only 3.14 hits the native pass.
+        assert rule_pass_for((3, 14)) == "native"
+        assert rule_pass_for((3, 13)) == "cross-version"
+        assert rule_pass_for((3, 11)) == "cross-version"
+        assert rule_pass_for((3, 8)) == "cross-version"
+        assert rule_pass_for((2, 7)) == "llm-only"
 
 
 # ---------------------------------------------------------------------------
@@ -114,17 +123,9 @@ class TestCrossVersionDetection:
         info = detect_version(fixture)
         assert info.magic_number == magic
 
-    def test_3_14_fixture_is_rule_supported(self):
+    def test_every_fixture_is_rule_supported(self):
+        """Both native (3.14) and cross-version (3.0-3.13) pass dispatch."""
         for f in _FIXTURES:
-            if f.stem.endswith("3.14"):
-                assert detect_version(f).rule_supported is True
-                return
-        pytest.skip("no 3.14 fixture present")
-
-    def test_older_fixtures_are_llm_only(self):
-        for f in _FIXTURES:
-            if "3.14" in f.stem:
-                continue
-            assert detect_version(f).rule_supported is False, (
-                f"{f.name} should route to LLM-only path"
+            assert detect_version(f).rule_supported is True, (
+                f"{f.name} unexpectedly lacks rule-pass coverage"
             )

@@ -1,0 +1,29 @@
+{
+  "pychd (rules-only)": {
+    "modules": 3,
+    "parses": 3,
+    "signature_match": 3,
+    "declaration_match": 3,
+    "strict_match": 3,
+    "skipped": 0,
+    "error": null
+  },
+  "uncompyle6": {
+    "modules": 3,
+    "parses": 3,
+    "signature_match": 3,
+    "declaration_match": 3,
+    "strict_match": 2,
+    "skipped": 0,
+    "error": null
+  },
+  "decompyle3": {
+    "modules": 3,
+    "parses": 3,
+    "signature_match": 3,
+    "declaration_match": 3,
+    "strict_match": 2,
+    "skipped": 0,
+    "error": null
+  }
+}

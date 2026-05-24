@@ -32,8 +32,12 @@ class TestSupportedVersion:
     def test_current_version(self):
         assert supported_version(sys.version_info[:2]) is True
 
-    def test_python_312(self):
-        assert supported_version((3, 12)) is False
+    def test_python_312_via_cross_version(self):
+        """3.12 is rule-supported via the cross-version xdis pass."""
+        assert supported_version((3, 12)) is True
+
+    def test_python_2_unsupported(self):
+        assert supported_version((2, 7)) is False
 
 
 class TestModuleDocstring:
@@ -164,11 +168,69 @@ class TestFunctions:
         f = next(f for f in funcs if f.name == "foo")
         assert f.decorators == ["deco"]
 
-    def test_renders_unrecovered_body(self):
+    def test_renders_trivial_return_body(self):
+        """``return arg`` is now recovered by the trivial-body rule."""
         result = _run("def foo(a): return a\n")
         out = _renders_to_valid_python(result)
-        assert "def foo(a):" in out
+        # Semantic assertion: the rendered module contains exactly one
+        # FunctionDef named foo whose body is a single Return(Name 'a').
+        # The earlier substring-based check would have happily passed
+        # for "def foo(a): return a; def foo(a): return b" or for a
+        # commented-out variant.
+        tree = ast.parse(out)
+        funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
+        assert len(funcs) == 1
+        f = funcs[0]
+        assert f.name == "foo"
+        assert len(f.body) == 1
+        assert isinstance(f.body[0], ast.Return)
+        assert isinstance(f.body[0].value, ast.Name)
+        assert f.body[0].value.id == "a"
+        assert "pychd: unrecovered" not in out
+
+    def test_complex_body_still_uses_unknown_block(self):
+        """Non-trivial bodies still fall through to the LLM placeholder."""
+        result = _run("def foo(a, b): return a + b * 2\n")
+        out = _renders_to_valid_python(result)
+        tree = ast.parse(out)
+        funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
+        assert len(funcs) == 1
+        assert funcs[0].name == "foo"
         assert "pychd: unrecovered" in out
+
+    def test_closure_body_is_not_falsely_recovered(self):
+        """Free-variable reads must not be rendered as a trivial body.
+
+        The trivial-body rule sees ``LOAD_DEREF outer; RETURN_VALUE``
+        and is tempted to emit ``return outer`` — but the rendered
+        function is standalone, so the deref name is unbound. The
+        guard in ``_try_recover_trivial_body`` keeps such closures as
+        UnknownBlock instead.
+        """
+        src = (
+            "def make():\n"
+            "    outer = 1\n"
+            "    def inner():\n"
+            "        return outer\n"
+            "    return inner\n"
+        )
+        # We extract just the ``inner`` code object and recover its
+        # body in isolation: ``inner`` has ``co_freevars = ('outer',)``.
+        code = compile(src, "<closure>", "exec")
+        make_code = next(
+            c for c in code.co_consts if hasattr(c, "co_name") and c.co_name == "make"
+        )
+        inner_code = next(
+            c
+            for c in make_code.co_consts
+            if hasattr(c, "co_name") and c.co_name == "inner"
+        )
+        from pychd.rules import _try_recover_trivial_body
+
+        recovered = _try_recover_trivial_body(inner_code, has_docstring=False)
+        assert recovered is None, (
+            f"trivial-body rule must defer closures to the LLM path; got {recovered!r}"
+        )
 
 
 class TestClasses:
@@ -208,8 +270,17 @@ class TestRecovery:
         assert "Mod." in out
         assert "__all__" in out
 
-    def test_module_with_function_has_unknown(self):
+    def test_trivial_pass_body_is_fully_recovered(self):
+        """A ``pass`` body is now recovered without needing the LLM."""
         result = _run("def foo(): pass\n")
+        assert result.recovered is True
+        assert len(result.module.unknown_blocks()) == 0
+
+    def test_module_with_complex_function_has_unknown(self):
+        """Non-trivial bodies stay as UnknownBlock for the hybrid path."""
+        result = _run(
+            "def foo(x):\n    if x > 0:\n        return x * 2\n    return -x\n"
+        )
         assert result.recovered is False
         assert len(result.module.unknown_blocks()) == 1
 

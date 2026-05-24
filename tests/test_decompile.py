@@ -19,12 +19,14 @@ class TestDisassemble:
         with tempfile.TemporaryDirectory() as tmp:
             pyc = Path(tmp) / "output.pyc"
             py_compile.compile(str(example_py), cfile=str(pyc))
-            text, version_tuple, code = disassemble_pyc_file(pyc)
+            text, version_tuple, code, xdis_code = disassemble_pyc_file(pyc)
             assert len(text) > 0
             assert isinstance(version_tuple, tuple)
             assert len(version_tuple) >= 2
             # On the current interpreter we also get a native code object.
             assert code is not None
+            # xdis code is always available.
+            assert xdis_code is not None
 
 
 class TestLLMOnlyDecompile:

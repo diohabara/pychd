@@ -38,13 +38,14 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import CodeType
+from typing import Any
 
 import litellm
 from litellm import completion, token_counter
 from xdis.disasm import disco
 from xdis.load import load_module
 
-from pychd import ir, rules
+from pychd import cross_version, ir, rules
 from pychd.types import ModelType
 
 
@@ -65,25 +66,38 @@ class DecompileReport:
 
 
 def _disassemble_native(pyc_file: Path) -> tuple[str, CodeType]:
-    """Disassemble using the standard library (current interpreter only)."""
+    """Disassemble using the standard library (current interpreter only).
+
+    Uses :func:`contextlib.redirect_stdout` so that an exception inside
+    :func:`dis.dis` cannot leave the process's ``sys.stdout`` pointing
+    at a closed :class:`io.StringIO`. The previous direct-assignment
+    pattern was correct on the happy path but would mask the real
+    error with an attribute-error from the next ``print`` call.
+    """
+    import contextlib
+
     with open(pyc_file, "rb") as f:
         f.read(16)  # 16-byte .pyc header in 3.7+
         bytecode = marshal.load(f)
     string_output = io.StringIO()
-    original_stdout = sys.stdout
-    sys.stdout = string_output
-    dis.dis(bytecode)
-    sys.stdout = original_stdout
+    with contextlib.redirect_stdout(string_output):
+        dis.dis(bytecode)
     return string_output.getvalue(), bytecode
 
 
-def disassemble_pyc_file(pyc_file: Path) -> tuple[str, tuple, CodeType | None]:
+def disassemble_pyc_file(
+    pyc_file: Path,
+) -> tuple[str, tuple, CodeType | None, Any | None]:
     """Disassemble a .pyc file from any Python version.
 
-    Returns ``(disassembled_text, version_tuple, code_or_none)``.
-    ``code_or_none`` is the stdlib ``CodeType`` when the .pyc matches
-    the running interpreter (which lets the rule pass run); otherwise
-    it is ``None`` and we use xdis text-only output for the LLM path.
+    Returns ``(disassembled_text, version_tuple, native_code, xdis_code)``.
+
+    - ``native_code`` is the stdlib :class:`types.CodeType` when the
+      .pyc matches the running interpreter (which lets the *native*
+      rule pass run on it); otherwise ``None``.
+    - ``xdis_code`` is always the :mod:`xdis` code object returned by
+      :func:`xdis.load.load_module`; the *cross-version* rule pass
+      walks this for non-current versions.
     """
     (
         version_tuple,
@@ -138,7 +152,7 @@ def disassemble_pyc_file(pyc_file: Path) -> tuple[str, tuple, CodeType | None]:
               """
         )
     )
-    return disassembled_pyc, version_tuple, native_code
+    return disassembled_pyc, version_tuple, native_code, co
 
 
 def _get_max_input_tokens(model: str, default: int = 8192) -> int:
@@ -324,8 +338,22 @@ def decompile_pyc(
     mode: Mode = Mode.HYBRID,
     model: ModelType | None = None,
 ) -> DecompileReport:
-    """Decompile a single .pyc to source according to *mode*."""
-    disassembled_pyc, version_tuple, native_code = disassemble_pyc_file(pyc_file)
+    """Decompile a single .pyc to source according to *mode*.
+
+    Dispatch:
+
+    - **llm-only** — always feeds the full xdis disassembly to the LLM.
+    - **rules-only / hybrid** — chooses the highest-fidelity rule pass
+      available for the bytecode's version:
+
+      * 3.14 .pyc on a 3.14 interpreter → :mod:`pychd.rules` native pass.
+      * any other CPython 3.x → :mod:`pychd.cross_version` xdis pass.
+      * neither available → fall through to LLM-only (or raise in
+        rules-only mode).
+    """
+    disassembled_pyc, version_tuple, native_code, xdis_code = disassemble_pyc_file(
+        pyc_file
+    )
 
     if mode == Mode.LLM_ONLY:
         if model is None:
@@ -340,10 +368,12 @@ def decompile_pyc(
             version_tuple=version_tuple,
         )
 
-    if native_code is None or not rules.supported_version(version_tuple):
+    # Choose the most accurate rule pass available.
+    rule_result = _run_rule_pass(version_tuple, native_code, xdis_code)
+    if rule_result is None:
         logging.info(
-            "Rule engine unavailable for this Python version "
-            f"({version_tuple[:2]}); falling back to LLM-only."
+            "No rule pass available for Python "
+            f"{version_tuple[:2]}; falling back to LLM-only."
         )
         if mode == Mode.RULES_ONLY:
             raise RuntimeError(
@@ -361,22 +391,57 @@ def decompile_pyc(
             version_tuple=version_tuple,
         )
 
-    rule_result = rules.extract_module(native_code)
-    unknowns = rule_result.module.unknown_blocks()
+    module, confidence = rule_result
+    unknowns = module.unknown_blocks()
     llm_calls = 0
     if mode == Mode.HYBRID and unknowns:
         if model is None:
             raise ValueError("hybrid mode requires a model when unknown blocks remain")
-        llm_calls = _fill_module_with_llm(rule_result.module, version_tuple, model)
+        llm_calls = _fill_module_with_llm(module, version_tuple, model)
 
     return DecompileReport(
-        source=rule_result.module.render(),
+        source=module.render(),
         mode=mode,
-        rule_confidence=rule_result.confidence,
+        rule_confidence=confidence,
         unknown_blocks=len(unknowns),
         llm_calls=llm_calls,
         version_tuple=version_tuple,
     )
+
+
+def _run_rule_pass(
+    version_tuple: tuple,
+    native_code: CodeType | None,
+    xdis_code: Any | None,
+) -> tuple[ir.Module, float] | None:
+    """Pick the best available rule pass for this bytecode version.
+
+    Returns ``(module, confidence)`` or ``None`` when no pass applies.
+
+    Failures inside the cross-version walker (unknown opcode, malformed
+    xdis instruction, …) are logged with a full traceback at WARNING
+    and surfaced as ``None`` — the caller decides whether to fall back
+    to LLM-only (hybrid) or raise (rules-only). Swallowing the
+    exception silently here would mask real regressions in the
+    cross-version walker; logging keeps debugging tractable.
+    """
+    if native_code is not None and rules.native_supported(version_tuple):
+        result = rules.extract_module(native_code)
+        return result.module, result.confidence
+    if xdis_code is not None and cross_version.supports(version_tuple):
+        try:
+            result_cv = cross_version.extract_module(xdis_code, version_tuple)
+        except Exception:
+            logging.warning(
+                "cross-version rule pass crashed for Python %s; falling "
+                "back to LLM-only path. Re-run with --verbose for the "
+                "full traceback.",
+                version_tuple[:2],
+                exc_info=True,
+            )
+            return None
+        return result_cv.module, result_cv.confidence
+    return None
 
 
 def decompile(

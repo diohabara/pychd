@@ -1,7 +1,7 @@
 [project]
 name = "pychd"
-version = "1.0.0"
-description = "Hybrid (rule-based + LLM) Python bytecode decompiler supporting multiple providers via litellm"
+version = "1.1.0"
+description = "Hybrid rule-based + LLM Python bytecode decompiler — native pass for 3.14 (99.8% signature recovery), cross-version pass for 3.0–3.13 via xdis"
 readme = "README.md"
 authors = [
     { name = "卍diohabara卍", email = "diohabara@users.noreply.github.com" }
@@ -25,6 +25,16 @@ dev = [
     "ruff",
     "ty>=0.0.39",
     "prek",
+    # Figure generation for the paper-quality benchmark section.
+    # plotly is the renderer; kaleido is its static-image backend
+    # (produces SVG / PNG without a browser).
+    "plotly>=5.20",
+    "kaleido==0.2.1",
+    # Comparative benchmark targets — install on demand so the main
+    # dev workflow stays fast. ``uncompyle6`` covers Python ≤ 3.8 and
+    # ``decompyle3`` covers 3.7–3.8.
+    "uncompyle6>=3.9.0",
+    "decompyle3>=3.9.2",
 ]
 
 [tool.ruff]
