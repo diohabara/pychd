@@ -17,20 +17,15 @@ repos:
     rev: "v4.3.0"
     hooks:
       - id: check-yaml
-        exclude: ^example/
       - id: end-of-file-fixer
-        exclude: ^example/
       - id: trailing-whitespace
-        exclude: ^example/
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: "v0.15.2"
     hooks:
       - id: ruff
-        exclude: ^example/
         args: ["--fix"]
       - id: ruff-format
-        exclude: ^example/
 
   - repo: local
     hooks:
