@@ -1,3 +1,17 @@
+# prek (https://github.com/j178/prek) — Rust-native re-implementation of
+# pre-commit. Install hooks with:
+#
+#   uvx prek install --hook-type pre-commit --hook-type pre-push
+#
+# Or via the project task runner:
+#
+#   just hooks-install
+#
+# `pre-commit` stage runs fast lint/format on each commit.
+# `pre-push` stage runs the full type-check + test suite before push.
+
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: "v4.3.0"
@@ -8,6 +22,7 @@ repos:
         exclude: ^example/
       - id: trailing-whitespace
         exclude: ^example/
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: "v0.15.2"
     hooks:
@@ -16,9 +31,20 @@ repos:
         args: ["--fix"]
       - id: ruff-format
         exclude: ^example/
-  - repo: https://github.com/facebook/pyrefly-pre-commit
-    rev: "0.53.0"
+
+  - repo: local
     hooks:
-      - id: pyrefly-check
-        exclude: ^example/
+      - id: ty-check
+        name: ty type-check
+        entry: uv run ty check pychd tests
+        language: system
+        types: [python]
         pass_filenames: false
+        stages: [pre-push]
+      - id: pytest
+        name: pytest
+        entry: uv run pytest tests/ -q
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]
