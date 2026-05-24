@@ -1,7 +1,7 @@
 [project]
 name = "pychd"
 version = "1.0.0"
-description = "LLM-powered Python bytecode decompiler supporting multiple providers via litellm"
+description = "Hybrid (rule-based + LLM) Python bytecode decompiler supporting multiple providers via litellm"
 readme = "README.md"
 authors = [
     { name = "卍diohabara卍", email = "diohabara@users.noreply.github.com" }
@@ -21,10 +21,9 @@ pychd = "pychd.main:main"
 
 [dependency-groups]
 dev = [
-    "pyrefly",
-    "respx",
     "pytest",
     "ruff",
+    "ty>=0.0.39",
     "prek",
 ]
 
@@ -34,8 +33,11 @@ target-version = "py314"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 
-[tool.pyrefly]
-python_version = "3.14"
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.src]
+include = ["pychd", "tests"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
