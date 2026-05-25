@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import sys
+import textwrap
 
 import pytest
 
@@ -258,6 +259,72 @@ class TestClasses:
         cls = next(s for s in result.module.body if isinstance(s, ir.ClassDef))
         attrs = [a for a in cls.body if isinstance(a, ir.Assign)]
         assert any(a.target == "KIND" and a.value == "1" for a in attrs)
+
+
+class TestControlFlowRecovery:
+    """Module-level if/try blocks survive with correct indentation."""
+
+    def test_if_type_checking_guarded_imports(self):
+        src = (
+            "from typing import TYPE_CHECKING\n"
+            "\n"
+            "if TYPE_CHECKING:\n"
+            "    from collections.abc import Iterable\n"
+        )
+        result = _run(src)
+        out = _renders_to_valid_python(result)
+        tree = ast.parse(out)
+        ifs = [n for n in tree.body if isinstance(n, ast.If)]
+        assert len(ifs) == 1
+        assert isinstance(ifs[0].test, ast.Name)
+        assert ifs[0].test.id == "TYPE_CHECKING"
+        # Iterable import survives *inside* the if-block, not at top level.
+        guarded_imports = [n for n in ifs[0].body if isinstance(n, ast.ImportFrom)]
+        assert len(guarded_imports) == 1
+        assert guarded_imports[0].module == "collections.abc"
+        # And not also at the top level.
+        top_iterable_imports = [
+            n
+            for n in tree.body
+            if isinstance(n, ast.ImportFrom) and n.module == "collections.abc"
+        ]
+        assert not top_iterable_imports
+
+    def test_try_except_importerror_is_flattened(self):
+        """``try: import X except ImportError`` flattens to top-level imports.
+
+        The ``_try_except_block`` matcher is implemented (see
+        ``pychd/rules.py``) but not wired in — its handler-boundary
+        heuristic regressed ~15 modules across the benchmark corpus
+        from mis-bounded handler ranges. The fallback contract is
+        that *every import inside a try/except still surfaces at
+        module scope*, which keeps ``signature_match`` intact even
+        though the original ``Try`` structure is lost.
+        """
+        src = textwrap.dedent(
+            """\
+            try:
+                from _accelerated import fast_thing
+            except ImportError:
+                from _python_fallback import fast_thing
+            """
+        )
+        result = _run(src)
+        out = _renders_to_valid_python(result)
+        tree = ast.parse(out)
+        # Both imports survive at top level.
+        modules_imported = {
+            n.module for n in tree.body if isinstance(n, ast.ImportFrom)
+        }
+        assert {"_accelerated", "_python_fallback"}.issubset(modules_imported), (
+            f"import flattening dropped a module: got {modules_imported}"
+        )
+        # And the names land too.
+        names_imported: set[str] = set()
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom):
+                names_imported.update(a.name for a in node.names)
+        assert "fast_thing" in names_imported
 
 
 class TestRecovery:

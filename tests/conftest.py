@@ -1,41 +1,76 @@
+"""Shared test fixtures for the pychd test suite."""
+
+from __future__ import annotations
+
+import textwrap
 from pathlib import Path
 
 import pytest
 
-# Sample sources used by parametrised tests in ``tests/test_decompile.py``
-# and other places that want a representative Python module to compile +
-# decompile. Kept intentionally tiny — these are smoke fixtures, not
-# functional benchmarks (the benchmark corpora live under
-# ``tools/build_corpora.py``).
+# Tiny sample sources used by parametrised tests in
+# ``tests/test_decompile.py`` and other suites that need a
+# representative Python module to compile + decompile. Kept
+# intentionally small — these are smoke fixtures, not benchmark
+# corpora (those live in ``tools/build_corpora.py``).
 _SAMPLE_SOURCES: dict[str, str] = {
-    "variables.py": 'x = 1\ny = "hello"\nz = [1, 2, 3]\n',
-    "imports.py": ("import os\nfrom os.path import join\n\n__all__ = ['join']\n"),
-    "functions.py": (
-        "def add(a, b=1):\n"
-        "    return a + b\n"
-        "\n"
-        "def greet(name: str) -> str:\n"
-        '    return f"hi {name}"\n'
+    "variables.py": textwrap.dedent(
+        """\
+        x = 1
+        y = "hello"
+        z = [1, 2, 3]
+        """
     ),
-    "classes.py": (
-        "class Animal:\n"
-        '    """An animal."""\n'
-        '    kind: str = "unknown"\n'
-        "    def speak(self):\n"
-        '        return "..."\n'
+    "imports.py": textwrap.dedent(
+        """\
+        import os
+        from os.path import join
+
+        __all__ = ['join']
+        """
     ),
-    "exceptions.py": ("try:\n    x = 1 / 0\nexcept ZeroDivisionError:\n    x = 0\n"),
-    "loops.py": (
-        "result = [i * 2 for i in range(10)]\nfor x in result:\n    print(x)\n"
+    "functions.py": textwrap.dedent(
+        """\
+        def add(a, b=1):
+            return a + b
+
+        def greet(name: str) -> str:
+            return f"hi {name}"
+        """
     ),
-    "decorators.py": (
-        "from functools import lru_cache\n"
-        "\n"
-        "@lru_cache\n"
-        "def fib(n):\n"
-        "    if n < 2:\n"
-        "        return n\n"
-        "    return fib(n - 1) + fib(n - 2)\n"
+    "classes.py": textwrap.dedent(
+        '''\
+        class Animal:
+            """An animal."""
+            kind: str = "unknown"
+            def speak(self):
+                return "..."
+        '''
+    ),
+    "exceptions.py": textwrap.dedent(
+        """\
+        try:
+            x = 1 / 0
+        except ZeroDivisionError:
+            x = 0
+        """
+    ),
+    "loops.py": textwrap.dedent(
+        """\
+        result = [i * 2 for i in range(10)]
+        for x in result:
+            print(x)
+        """
+    ),
+    "decorators.py": textwrap.dedent(
+        """\
+        from functools import lru_cache
+
+        @lru_cache
+        def fib(n):
+            if n < 2:
+                return n
+            return fib(n - 1) + fib(n - 2)
+        """
     ),
 }
 

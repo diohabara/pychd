@@ -1,29 +1,514 @@
 {
   "pychd (rules-only)": {
-    "modules": 3,
-    "parses": 3,
-    "signature_match": 3,
-    "declaration_match": 3,
+    "modules": 23,
+    "parses": 22,
+    "signature_match": 22,
+    "declaration_match": 22,
     "strict_match": 3,
     "skipped": 0,
-    "error": null
+    "error": null,
+    "per_module": [
+      {
+        "name": "stdlib:calendar",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:contextlib",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:copy",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:dataclasses",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:enum",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:functools",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:ipaddress",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:queue",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:socketserver",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:string",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:tempfile",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:textwrap",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:traceback",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": true
+      },
+      {
+        "name": "stdlib:typing",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:weakref",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "pypi:six_six",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "pypi:packaging___init__",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "pypi:packaging__elffile",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": true
+      },
+      {
+        "name": "pypi:packaging__manylinux",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "pypi:certifi___main__",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "pypi:certifi_core",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "pypi:idna___init__",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": true
+      },
+      {
+        "name": "pypi:idna_cli",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      }
+    ]
   },
   "uncompyle6": {
-    "modules": 3,
-    "parses": 3,
-    "signature_match": 3,
-    "declaration_match": 3,
-    "strict_match": 2,
-    "skipped": 0,
-    "error": null
+    "modules": 23,
+    "parses": 5,
+    "signature_match": 4,
+    "declaration_match": 4,
+    "strict_match": 3,
+    "skipped": 2,
+    "error": null,
+    "per_module": [
+      {
+        "name": "stdlib:calendar",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:contextlib",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:copy",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:dataclasses",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:enum",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:functools",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:ipaddress",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:queue",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:socketserver",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:string",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:tempfile",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:textwrap",
+        "ok": false,
+        "error": "non-zero exit"
+      },
+      {
+        "name": "stdlib:traceback",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:typing",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:weakref",
+        "ok": false,
+        "error": "non-zero exit"
+      },
+      {
+        "name": "pypi:six_six",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "pypi:packaging___init__",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": true
+      },
+      {
+        "name": "pypi:packaging__elffile",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "pypi:packaging__manylinux",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "pypi:certifi___main__",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": true
+      },
+      {
+        "name": "pypi:certifi_core",
+        "ok": true,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "pypi:idna___init__",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": true
+      },
+      {
+        "name": "pypi:idna_cli",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      }
+    ]
   },
   "decompyle3": {
-    "modules": 3,
-    "parses": 3,
-    "signature_match": 3,
-    "declaration_match": 3,
-    "strict_match": 2,
+    "modules": 23,
+    "parses": 12,
+    "signature_match": 12,
+    "declaration_match": 11,
+    "strict_match": 3,
     "skipped": 0,
-    "error": null
+    "error": null,
+    "per_module": [
+      {
+        "name": "stdlib:calendar",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:contextlib",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:copy",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:dataclasses",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:enum",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:functools",
+        "ok": true,
+        "sig": true,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:ipaddress",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:queue",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:socketserver",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:string",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:tempfile",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:textwrap",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:traceback",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "stdlib:typing",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "stdlib:weakref",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "pypi:six_six",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "pypi:packaging___init__",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": true
+      },
+      {
+        "name": "pypi:packaging__elffile",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "pypi:packaging__manylinux",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      },
+      {
+        "name": "pypi:certifi___main__",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": true
+      },
+      {
+        "name": "pypi:certifi_core",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": false
+      },
+      {
+        "name": "pypi:idna___init__",
+        "ok": true,
+        "sig": true,
+        "decl": true,
+        "strict": true
+      },
+      {
+        "name": "pypi:idna_cli",
+        "ok": false,
+        "sig": false,
+        "decl": false,
+        "strict": false
+      }
+    ]
   }
 }

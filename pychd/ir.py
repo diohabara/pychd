@@ -229,6 +229,67 @@ class RawStatement(Stmt):
 
 
 @dataclass
+class If(Stmt):
+    """``if <test>:`` block with an optional ``else:`` branch.
+
+    Used to re-emit module-level conditionals — most importantly the
+    ubiquitous ``if TYPE_CHECKING:`` typing-only import guard — that
+    earlier versions of the walker flattened to top level. ``test`` is
+    a pre-rendered expression string; ``body`` and ``orelse`` are
+    ordinary statement lists.
+    """
+
+    test: str
+    body: list[Stmt] = field(default_factory=list)
+    orelse: list[Stmt] = field(default_factory=list)
+
+    def render(self, indent: int = 0) -> str:
+        pad = _INDENT * indent
+        lines: list[str] = [f"{pad}if {self.test}:"]
+        if not self.body:
+            lines.append(_INDENT * (indent + 1) + "pass")
+        else:
+            for stmt in self.body:
+                lines.append(stmt.render(indent + 1))
+        if self.orelse:
+            lines.append(f"{pad}else:")
+            for stmt in self.orelse:
+                lines.append(stmt.render(indent + 1))
+        return "\n".join(lines)
+
+
+@dataclass
+class Try(Stmt):
+    """``try:`` block with ``except <T>:`` handlers.
+
+    Used to re-emit module-level ``try: import X except ImportError:``
+    patterns. ``handlers`` is a list of ``(exception_text, body)``
+    tuples; an empty ``exception_text`` renders as a bare ``except:``.
+    """
+
+    body: list[Stmt] = field(default_factory=list)
+    handlers: list[tuple[str, list[Stmt]]] = field(default_factory=list)
+
+    def render(self, indent: int = 0) -> str:
+        pad = _INDENT * indent
+        lines: list[str] = [f"{pad}try:"]
+        if not self.body:
+            lines.append(_INDENT * (indent + 1) + "pass")
+        else:
+            for stmt in self.body:
+                lines.append(stmt.render(indent + 1))
+        for exc, handler_body in self.handlers:
+            header = f"{pad}except {exc}:" if exc else f"{pad}except:"
+            lines.append(header)
+            if not handler_body:
+                lines.append(_INDENT * (indent + 1) + "pass")
+            else:
+                for stmt in handler_body:
+                    lines.append(stmt.render(indent + 1))
+        return "\n".join(lines)
+
+
+@dataclass
 class Module:
     docstring: str | None = None
     body: list[Stmt] = field(default_factory=list)
@@ -262,6 +323,17 @@ def _collect_unknowns(stmt: Stmt) -> list[UnknownBlock]:
     elif isinstance(stmt, (FunctionDef, ClassDef)):
         for inner in stmt.body:
             out.extend(_collect_unknowns(inner))
+    elif isinstance(stmt, If):
+        for inner in stmt.body:
+            out.extend(_collect_unknowns(inner))
+        for inner in stmt.orelse:
+            out.extend(_collect_unknowns(inner))
+    elif isinstance(stmt, Try):
+        for inner in stmt.body:
+            out.extend(_collect_unknowns(inner))
+        for _exc, handler in stmt.handlers:
+            for inner in handler:
+                out.extend(_collect_unknowns(inner))
     return out
 
 

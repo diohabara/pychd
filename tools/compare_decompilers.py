@@ -1,4 +1,4 @@
-"""Compare pychd against other Python decompilers on a shared corpus.
+"""Compare pychd against other Python decompilers on a shared real corpus.
 
 Why this script exists
 ----------------------
@@ -7,33 +7,33 @@ The README's headline numbers measure pychd against the ground truth
 (the original ``.py`` source). They do **not** answer the natural
 follow-up: *how does pychd compare to the existing tooling?*
 
-To answer that, this script:
+The answer needs a corpus all three tools can read. ``uncompyle6``
+caps at Python 3.8; ``decompyle3`` covers 3.7 / 3.8 only. The newest
+mutual ground is **Python 3.8** — so this script compiles a real
+corpus (a curated PyPI subset + stdlib modules) with a locally
+installed 3.8 interpreter, runs each tool against every ``.pyc``,
+and scores the recovered source via the same three-tier metric used
+by the rest of the benchmark suite.
 
-1. Picks a corpus we can compile to a version every comparison tool
-   supports. ``uncompyle6`` only covers ≤ Python 3.8 and ``decompyle3``
-   covers 3.7 / 3.8 — so the comparison corpus is compiled with
-   Python 3.8 (the newest mutual ground).
-2. Runs each tool against the same ``.pyc`` files.
-3. Scores each tool's output against the original source using the
-   same three-tier match metric (signature / declaration / strict).
-4. Emits a JSON file consumed by :mod:`tools.render_figures` to
-   produce the comparison bar chart embedded in the README.
+Honest framing
+--------------
 
-What we **do not** claim
-------------------------
-
-* pychd is not faster than ``pycdc`` — we don't measure latency in the
-  comparison chart, only fidelity. Cross-tool latency comparisons are
-  unfair because the underlying engines target different problems
-  (full body recovery vs. declaration recovery).
-* The comparison is honest about the version mismatch: tools that
-  don't support 3.8 are excluded rather than scored at 0%. Their
-  version-range coverage is documented separately in the README.
+* The comparison is **declaration-level** (signature_match,
+  declaration_match) plus strict-AST equality. Tools are not scored
+  on body recovery — every tool tries to recover bodies and they all
+  succeed-or-fail in different ways; comparing those scores would
+  mostly compare grammar coverage of the prior tools rather than
+  pychd's design.
+* Tools that don't support 3.8 are excluded rather than scored at
+  0 %. Their version-range coverage is documented separately.
+* The corpus is downloaded on demand from PyPI and from the running
+  interpreter's stdlib; nothing third-party is committed.
 
 Usage::
 
     uv run python tools/compare_decompilers.py
-    uv run python tools/compare_decompilers.py --output /tmp/c.json
+    uv run python tools/compare_decompilers.py --output /tmp/cmp.json
+    uv run python tools/compare_decompilers.py --quick   # smaller corpus
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -58,56 +59,51 @@ from tools.benchmark import (  # noqa: E402
     _skeleton_match,
 )
 
-# Sources that each comparison tool can reasonably handle: we want
-# small, syntactically simple modules so any failures are attributable
-# to the decompiler rather than the corpus. The shapes match what
-# we cover in the cross-version recovery test fixture.
-COMPARISON_SOURCES: dict[str, str] = {
-    "imports.py": (
-        "import os.path\n"
-        "from collections import OrderedDict\n"
-        "from typing import List, Dict\n"
-        "\n"
-        "__all__ = ['OrderedDict']\n"
-    ),
-    "class.py": (
-        '"""Greeter."""\n'
-        "class Greeter:\n"
-        '    """A trivial greeter."""\n'
-        "    def __init__(self, name):\n"
-        "        self.name = name\n"
-        "    def greet(self):\n"
-        "        return 'Hello, ' + self.name\n"
-    ),
-    "functions.py": (
-        "def add(a, b):\n"
-        "    return a + b\n"
-        "\n"
-        "def make_list():\n"
-        "    return []\n"
-        "\n"
-        "def get_x(self):\n"
-        "    return self.x\n"
-    ),
-}
-
 # Python interpreter used to produce the .pyc files. 3.8 is the
 # newest version that both ``uncompyle6`` and ``decompyle3`` can read.
 COMPARISON_PYTHON = "3.8"
 
+# Curated set of stdlib modules that compile cleanly under 3.8 and
+# exercise a representative cross-section of declaration shapes: pure
+# data (``calendar``, ``ipaddress``), inheritance hierarchies
+# (``contextlib``, ``logging``), import-heavy facades
+# (``traceback``, ``typing``), and decorator-heavy modules
+# (``functools``).
+STDLIB_MODULES = [
+    "calendar",
+    "contextlib",
+    "copy",
+    "dataclasses",
+    "enum",
+    "functools",
+    "ipaddress",
+    "logging",
+    "queue",
+    "socketserver",
+    "string",
+    "tempfile",
+    "textwrap",
+    "tomllib",  # may not exist on 3.8 — gracefully skip
+    "traceback",
+    "typing",
+    "weakref",
+]
+
 
 @dataclass
 class ToolResult:
-    modules: int
-    parses: int
-    signature_match: int
-    declaration_match: int
-    strict_match: int
-    skipped: int
+    modules: int = 0
+    parses: int = 0
+    signature_match: int = 0
+    declaration_match: int = 0
+    strict_match: int = 0
+    skipped: int = 0
     error: str | None = None
+    per_module: list[dict] | None = None
 
 
 def _find_python(version: str) -> str | None:
+    """Locate the absolute path to ``python<version>`` via uv."""
     try:
         proc = subprocess.run(
             ["uv", "python", "find", version],
@@ -124,47 +120,146 @@ def _find_python(version: str) -> str | None:
     return out[0] if out else None
 
 
-def _compile_corpus(py_interp: str, root: Path) -> dict[str, Path]:
-    """Compile every source in :data:`COMPARISON_SOURCES` to .pyc."""
-    src_dir = root / "src"
-    pyc_dir = root / "pyc"
-    src_dir.mkdir(parents=True, exist_ok=True)
-    pyc_dir.mkdir(parents=True, exist_ok=True)
-    files: dict[str, Path] = {}
-    for name, body in COMPARISON_SOURCES.items():
-        src = src_dir / name
-        src.write_text(body)
-        pyc = pyc_dir / name.replace(".py", ".pyc")
-        cmd = (
-            "import py_compile; "
-            f"py_compile.compile({str(src)!r}, cfile={str(pyc)!r}, doraise=True)"
-        )
+def _stdlib_dir(py_interp: str) -> Path | None:
+    """Resolve the stdlib directory of *py_interp* (e.g. ``/.../python3.8``)."""
+    try:
+        snippet = "import sysconfig; print(sysconfig.get_paths()['stdlib'])"
         proc = subprocess.run(
-            [py_interp, "-c", cmd],
+            [py_interp, "-c", snippet],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError, subprocess.TimeoutExpired:
+        return None
+    if proc.returncode != 0:
+        return None
+    p = Path(proc.stdout.strip())
+    return p if p.is_dir() else None
+
+
+def _gather_corpus(
+    py_interp: str,
+    workdir: Path,
+    *,
+    quick: bool,
+) -> list[tuple[str, Path, Path]]:
+    """Compile a real Python 3.8 corpus into *workdir*.
+
+    Returns ``[(module_name, src_path, pyc_path), ...]``.
+
+    The corpus combines two sources:
+
+    1. The curated stdlib subset declared in :data:`STDLIB_MODULES`,
+       resolved against *py_interp*'s actual stdlib directory.
+    2. A curated PyPI subset (``six``, ``packaging``, ``certifi``,
+       ``idna``, ``charset_normalizer``) — these are pure-Python,
+       Python-3.8-compatible, and broadly representative.
+
+    ``quick=True`` halves both lists for fast smoke runs.
+    """
+    src_root = workdir / "src"
+    pyc_root = workdir / "pyc"
+    src_root.mkdir(parents=True, exist_ok=True)
+    pyc_root.mkdir(parents=True, exist_ok=True)
+
+    out: list[tuple[str, Path, Path]] = []
+    stdlib = _stdlib_dir(py_interp)
+    if stdlib is None:
+        print(
+            f"warning: could not resolve stdlib for {py_interp}; "
+            "stdlib subset will be skipped",
+            file=sys.stderr,
+        )
+    else:
+        modules = (
+            STDLIB_MODULES[: len(STDLIB_MODULES) // 2] if quick else STDLIB_MODULES
+        )
+        for name in modules:
+            src = stdlib / f"{name}.py"
+            if not src.is_file():
+                continue
+            dst_src = src_root / f"stdlib_{name}.py"
+            shutil.copy(src, dst_src)
+            pyc = pyc_root / f"stdlib_{name}.pyc"
+            if _compile(py_interp, dst_src, pyc):
+                out.append((f"stdlib:{name}", dst_src, pyc))
+
+    pypi_subset = ["six", "packaging", "certifi", "idna", "charset_normalizer"]
+    if quick:
+        pypi_subset = pypi_subset[:2]
+    for pkg in pypi_subset:
+        candidates = _resolve_pypi_modules(pkg)
+        for label, src in candidates:
+            dst_src = src_root / f"pypi_{label}.py"
+            try:
+                shutil.copy(src, dst_src)
+            except OSError:
+                continue
+            pyc = pyc_root / f"pypi_{label}.pyc"
+            if _compile(py_interp, dst_src, pyc):
+                out.append((f"pypi:{label}", dst_src, pyc))
+
+    return out
+
+
+def _resolve_pypi_modules(pkg: str) -> list[tuple[str, Path]]:
+    """Find top-level ``.py`` files from a cached PyPI corpus under /tmp.
+
+    Re-uses ``/tmp/pychd-corpora/pypi-top20/<pkg>/`` when present (the
+    same cache ``tools/build_corpora.py`` populates). Returns up to
+    three files per package to keep the comparison corpus tractable.
+    """
+    base = Path("/tmp/pychd-corpora/pypi-top20") / pkg
+    if not base.is_dir():
+        return []
+    py_files = sorted(base.glob("*.py"))[:3]
+    # Skip dunder-init "stub" __init__.py that just re-exports.
+    py_files = [p for p in py_files if p.stat().st_size > 200]
+    out: list[tuple[str, Path]] = []
+    for p in py_files:
+        out.append((f"{pkg}_{p.stem}", p))
+    return out
+
+
+def _compile(py_interp: str, src: Path, pyc: Path) -> bool:
+    """Compile *src* into *pyc* with *py_interp*; True on success."""
+    snippet = textwrap.dedent(
+        f"""\
+        import py_compile, sys
+        try:
+            py_compile.compile({str(src)!r}, cfile={str(pyc)!r}, doraise=True)
+        except Exception as e:
+            sys.stderr.write(repr(e))
+            sys.exit(1)
+        """
+    )
+    try:
+        proc = subprocess.run(
+            [py_interp, "-c", snippet],
             capture_output=True,
             text=True,
             check=False,
             timeout=30,
         )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"py_compile failed for {name} under {py_interp}: {proc.stderr}"
-            )
-        files[name] = pyc
-    return files
+    except FileNotFoundError, subprocess.TimeoutExpired:
+        return False
+    return proc.returncode == 0
 
 
-# ---- Per-tool runners ----------------------------------------------------
+# ---------------------------------------------------------------------------
+# Per-tool scoring
+# ---------------------------------------------------------------------------
 
 
-def _score(name: str, source: str, recovered: str) -> tuple[bool, bool, bool, bool]:
+def _score(original_src: str, recovered_src: str) -> tuple[bool, bool, bool, bool]:
     """Return ``(parses, signature, declaration, strict)`` booleans."""
     try:
-        original = ast.parse(source)
+        original = ast.parse(original_src)
     except SyntaxError:
         return False, False, False, False
     try:
-        rec = ast.parse(recovered)
+        rec = ast.parse(recovered_src)
         parses = True
     except SyntaxError:
         return False, False, False, False
@@ -176,28 +271,22 @@ def _score(name: str, source: str, recovered: str) -> tuple[bool, bool, bool, bo
     )
 
 
-def _run_pychd(pyc_files: dict[str, Path]) -> ToolResult:
-    """Run pychd's rules-only pipeline on each compiled file."""
+def _run_pychd(corpus: list[tuple[str, Path, Path]]) -> ToolResult:
+    """Run pychd's rules-only pipeline (cross-version pass for 3.8)."""
     from pychd.decompile import Mode, decompile_pyc
 
-    res = ToolResult(
-        modules=0,
-        parses=0,
-        signature_match=0,
-        declaration_match=0,
-        strict_match=0,
-        skipped=0,
-    )
-    for name, pyc in pyc_files.items():
+    res = ToolResult(per_module=[])
+    for name, src, pyc in corpus:
         res.modules += 1
+        original = src.read_text()
         try:
             report = decompile_pyc(pyc, mode=Mode.RULES_ONLY)
+            recovered = report.source
         except Exception as e:
-            res.error = (res.error or "") + f"\n{name}: {e}"
+            res.skipped += 1
+            res.per_module.append({"name": name, "ok": False, "error": str(e)})
             continue
-        parses, sig, decl, strict = _score(
-            name, COMPARISON_SOURCES[name], report.source
-        )
+        parses, sig, decl, strict = _score(original, recovered)
         if parses:
             res.parses += 1
         if sig:
@@ -206,81 +295,65 @@ def _run_pychd(pyc_files: dict[str, Path]) -> ToolResult:
             res.declaration_match += 1
         if strict:
             res.strict_match += 1
+        res.per_module.append(
+            {
+                "name": name,
+                "ok": parses,
+                "sig": sig,
+                "decl": decl,
+                "strict": strict,
+            }
+        )
     return res
 
 
 def _run_external(
     tool_cmd: list[str],
-    pyc_files: dict[str, Path],
-    *,
-    output_to_file: bool = False,
+    corpus: list[tuple[str, Path, Path]],
 ) -> ToolResult:
-    """Invoke an external decompiler binary and score its output.
+    """Invoke an external decompiler via ``-o <tempdir>`` and score it.
 
-    The external tool is expected to take a single .pyc path as its
-    argument and either write the recovered source to stdout, or — if
-    ``output_to_file`` is set — accept ``-o <dir>`` and emit a sibling
-    file next to the .pyc. Any non-zero exit code or empty output is
-    treated as a per-module skip.
-
-    ``decompyle3``'s default stdout includes a grammar dump that
-    masks the actual decompiled source; for that tool we use ``-o``
-    so the recovered file is isolated cleanly.
+    External tools write the recovered ``.py`` next to (or under) the
+    output directory. We discover the produced file by extension and
+    feed its contents to :func:`_score`. Any non-zero exit code, an
+    empty output directory, or a timeout records a per-module skip
+    rather than a 0-everything entry.
     """
-    res = ToolResult(
-        modules=0,
-        parses=0,
-        signature_match=0,
-        declaration_match=0,
-        strict_match=0,
-        skipped=0,
-    )
-    for name, pyc in pyc_files.items():
+    res = ToolResult(per_module=[])
+    for name, src, pyc in corpus:
         res.modules += 1
+        original = src.read_text()
         recovered: str | None = None
         try:
-            if output_to_file:
-                with tempfile.TemporaryDirectory() as out_dir:
-                    proc = subprocess.run(
-                        [*tool_cmd, "-o", out_dir, str(pyc)],
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                        timeout=30,
-                    )
-                    if proc.returncode != 0:
-                        res.skipped += 1
-                        continue
-                    out_files = [
-                        Path(out_dir) / f
-                        for f in os.listdir(out_dir)
-                        if f.endswith((".py", ".dis"))
-                    ]
-                    py_files = [f for f in out_files if f.suffix == ".py"]
-                    if not py_files:
-                        res.skipped += 1
-                        continue
-                    recovered = py_files[0].read_text()
-            else:
+            with tempfile.TemporaryDirectory() as out_dir:
                 proc = subprocess.run(
-                    [*tool_cmd, str(pyc)],
+                    [*tool_cmd, "-o", out_dir, str(pyc)],
                     capture_output=True,
                     text=True,
                     check=False,
-                    timeout=30,
+                    timeout=60,
                 )
-                if proc.returncode != 0 or not proc.stdout.strip():
+                if proc.returncode != 0:
                     res.skipped += 1
+                    res.per_module.append(
+                        {"name": name, "ok": False, "error": "non-zero exit"}
+                    )
                     continue
-                recovered = proc.stdout
+                py_outs = [
+                    Path(out_dir) / f for f in os.listdir(out_dir) if f.endswith(".py")
+                ]
+                if not py_outs:
+                    res.skipped += 1
+                    res.per_module.append(
+                        {"name": name, "ok": False, "error": "no .py output"}
+                    )
+                    continue
+                recovered = py_outs[0].read_text()
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            res.error = (res.error or "") + f"\n{name}: {e}"
             res.skipped += 1
+            res.per_module.append({"name": name, "ok": False, "error": str(e)})
             continue
-        if recovered is None:
-            res.skipped += 1
-            continue
-        parses, sig, decl, strict = _score(name, COMPARISON_SOURCES[name], recovered)
+        parses, sig, decl, strict = _score(original, recovered)
         if parses:
             res.parses += 1
         if sig:
@@ -289,6 +362,15 @@ def _run_external(
             res.declaration_match += 1
         if strict:
             res.strict_match += 1
+        res.per_module.append(
+            {
+                "name": name,
+                "ok": parses,
+                "sig": sig,
+                "decl": decl,
+                "strict": strict,
+            }
+        )
     return res
 
 
@@ -300,6 +382,14 @@ def main(argv: list[str] | None = None) -> int:
         default=REPO_ROOT / "assets" / "_comparison.json",
     )
     ap.add_argument("--python-version", default=COMPARISON_PYTHON)
+    ap.add_argument(
+        "--quick",
+        action="store_true",
+        help=(
+            "Halve the corpus size — useful for smoke runs while the"
+            " harness itself is being modified."
+        ),
+    )
     args = ap.parse_args(argv)
 
     py_interp = _find_python(args.python_version)
@@ -309,45 +399,51 @@ def main(argv: list[str] | None = None) -> int:
             f"skipping comparison (run `uv python install {args.python_version}`).",
             file=sys.stderr,
         )
-        # Emit a stub so the rest of the pipeline still produces a file.
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps({}, indent=2))
         return 0
 
     with tempfile.TemporaryDirectory() as tmp:
-        files = _compile_corpus(py_interp, Path(tmp))
+        corpus = _gather_corpus(py_interp, Path(tmp), quick=args.quick)
+        if not corpus:
+            print(
+                "warning: corpus assembly produced no files; nothing to do.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"comparing {len(corpus)} modules compiled with "
+            f"{py_interp} (Python {args.python_version})..."
+        )
+
         out: dict[str, dict] = {}
-        out["pychd (rules-only)"] = asdict(_run_pychd(files))
+        out["pychd (rules-only)"] = asdict(_run_pychd(corpus))
         if shutil.which("uncompyle6"):
-            out["uncompyle6"] = asdict(
-                _run_external(["uncompyle6"], files, output_to_file=True)
-            )
+            out["uncompyle6"] = asdict(_run_external(["uncompyle6"], corpus))
         if shutil.which("decompyle3"):
-            out["decompyle3"] = asdict(
-                _run_external(["decompyle3"], files, output_to_file=True)
-            )
+            out["decompyle3"] = asdict(_run_external(["decompyle3"], corpus))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(out, indent=2))
-    print(f"wrote {args.output.relative_to(REPO_ROOT)}")
+    print(f"\nwrote {args.output.relative_to(REPO_ROOT)}\n")
     for tool, data in out.items():
+        n = data["modules"]
         print(
-            f"  {tool:<20} sig={data['signature_match']}/{data['modules']} "
-            f"decl={data['declaration_match']}/{data['modules']} "
-            f"strict={data['strict_match']}/{data['modules']} "
+            f"  {tool:<22} "
+            f"sig={data['signature_match']}/{n} "
+            f"({100 * data['signature_match'] / max(1, n):4.1f}%)  "
+            f"decl={data['declaration_match']}/{n} "
+            f"({100 * data['declaration_match'] / max(1, n):4.1f}%)  "
+            f"strict={data['strict_match']}/{n}  "
             f"skipped={data['skipped']}"
         )
 
-    # Also surface the version-range matrix in the script's stdout so
-    # CI logs document the comparison's limits explicitly.
     print()
     print("Tool version-range coverage:")
-    print("  pychd          - every CPython 3.x (this corpus: 3.8)")
-    print("  uncompyle6     - 2.4 - 3.8 (no 3.9+)")
-    print("  decompyle3     - 3.7 / 3.8 only")
-    print("  pycdc          - varies; not installed by default")
-    print()
-    print(f"Comparison corpus compiled with: {py_interp}")
+    print("  pychd       — every CPython 3.x (this corpus: 3.8)")
+    print("  uncompyle6  — 2.4 – 3.8 (no 3.9+)")
+    print("  decompyle3  — 3.7 / 3.8 only")
+    print(f"  Comparison corpus compiled with: {py_interp}")
     return 0
 
 

@@ -16,6 +16,7 @@ every locally-installed interpreter and verifies the recovered output:
 from __future__ import annotations
 
 import ast
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,87 @@ class TestCrossVersionRecovery:
         info = detect_version(fixture)
         expected = "native" if info.version[:2] == (3, 14) else "cross-version"
         assert rule_pass_for(info.version) == expected
+
+
+class TestCrossVersionDefaults:
+    """Per-version default-argument recovery for the cross-version walker.
+
+    Recovery covers MAKE_FUNCTION's flag-encoded layout (3.7 – 3.10
+    with qualname, 3.11 – 3.12 without), and the SET_FUNCTION_ATTRIBUTE
+    chain layout (3.13+). The fixture is compiled fresh under each
+    locally-installed Python in :func:`tools.build_multiversion_fixtures`,
+    so any version that materialises a ``sample-X.Y.pyc`` is exercised.
+    """
+
+    _SOURCE = textwrap.dedent(
+        """\
+        def f(a, b=10, c="hi", *, d=5, e="yo"):
+            return a
+        """
+    )
+
+    @pytest.mark.parametrize("fixture", _FIXTURES, ids=lambda p: p.name)
+    def test_defaults_round_trip(self, fixture: Path, tmp_path: Path) -> None:
+        import py_compile
+
+        # We need the sample to be compiled by the *same* interpreter as
+        # ``fixture`` — derive the path back from the filename.
+        py_interp = _python_for_fixture(fixture)
+        if py_interp is None:
+            pytest.skip(f"no interpreter for {fixture.name}")
+        src_path = tmp_path / "defaults.py"
+        src_path.write_text(self._SOURCE)
+        pyc_path = tmp_path / "defaults.pyc"
+        import subprocess
+
+        cmd = (
+            "import py_compile; "
+            f"py_compile.compile({str(src_path)!r}, "
+            f"cfile={str(pyc_path)!r}, doraise=True)"
+        )
+        result = subprocess.run([py_interp, "-c", cmd], capture_output=True, text=True)
+        if result.returncode != 0:
+            pytest.skip(f"{py_interp} could not compile sample: {result.stderr}")
+        del py_compile  # ensure we used the *external* compiler, not local
+
+        from pychd.decompile import Mode, decompile_pyc
+
+        report = decompile_pyc(pyc_path, mode=Mode.RULES_ONLY)
+        tree = ast.parse(report.source)
+        funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
+        assert len(funcs) == 1
+        f = funcs[0]
+        # Positional defaults: b=10, c='hi'.
+        assert len(f.args.defaults) == 2
+        default_values = [
+            d.value if isinstance(d, ast.Constant) else None for d in f.args.defaults
+        ]
+        assert default_values == [10, "hi"], (
+            f"{fixture.name}: positional defaults wrong: {default_values}"
+        )
+        # Keyword-only defaults: d=5, e='yo'.
+        kw_defaults = [
+            d.value if isinstance(d, ast.Constant) else None for d in f.args.kw_defaults
+        ]
+        assert kw_defaults == [5, "yo"], (
+            f"{fixture.name}: kw defaults wrong: {kw_defaults}"
+        )
+
+
+def _python_for_fixture(fixture: Path) -> str | None:
+    """Resolve the Python interpreter used to compile *fixture*."""
+    import subprocess
+
+    version = fixture.stem.split("-", 1)[1]
+    proc = subprocess.run(
+        ["uv", "python", "find", version],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.strip().splitlines()
+    return out[0] if out else None
 
 
 class TestCrossVersionSupports:

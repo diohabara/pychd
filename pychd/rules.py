@@ -212,6 +212,21 @@ class _Context:
         # invisible by the time we reach STORE_SUBSCR.
         if self._try_annotation_store():
             return True
+        # ``_try_if_block`` fires at module scope, before the
+        # conditional's test pushes its ``LOAD_NAME`` onto our model
+        # stack. It's a no-op inside function / class bodies where
+        # structured control flow is the LLM pass's responsibility.
+        #
+        # A symmetric ``_try_except_block`` matcher (the
+        # ``try: from X import Y except ImportError: from A import Y``
+        # shape) is implemented in this module but not wired in: even
+        # with a strict import-only gate it regressed ~15 modules
+        # across the benchmark corpus from mis-bounded handler ranges.
+        # Cleanly enabling it requires walking the exception table for
+        # *all* nested entries, not just the entry starting at the
+        # current offset.
+        if not self.is_class and self._try_if_block():
+            return True
         if self._try_push():
             return True
         if self._try_import():
@@ -886,6 +901,193 @@ class _Context:
             self.pos += 1
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # Module-level structured control flow
+    # ------------------------------------------------------------------
+
+    def _try_if_block(self) -> bool:
+        """Recognise ``if <name>:`` blocks at module scope.
+
+        Targets the canonical ``if TYPE_CHECKING:`` typing-guard
+        pattern: ``LOAD_NAME X ; (TO_BOOL)? ; POP_JUMP_IF_FALSE T
+        ; (NOT_TAKEN)?``. Anything more complex than a bare name (e.g.
+        boolean ``or`` / ``and``, attribute access, calls) is ignored
+        — those rarely guard imports and add disproportionate
+        complexity.
+
+        On a match we slice out the if-body instructions, run a fresh
+        ``_Context`` over them, and emit a single ``ir.If`` node. The
+        result is that ``if TYPE_CHECKING: from x import y`` survives
+        with correct indentation instead of being flattened to a
+        top-level import.
+        """
+        if self.pos >= len(self.ins):
+            return False
+        ins = self.ins[self.pos]
+        if ins.opname not in {"LOAD_NAME", "LOAD_GLOBAL"}:
+            return False
+        test_name = str(ins.argval)
+        cur = self.pos + 1
+        # Optional TO_BOOL on 3.12+.
+        if cur < len(self.ins) and self.ins[cur].opname == "TO_BOOL":
+            cur += 1
+        if cur >= len(self.ins) or self.ins[cur].opname != "POP_JUMP_IF_FALSE":
+            return False
+        jump = self.ins[cur]
+        target_offset = jump.argval
+        if target_offset is None:
+            return False
+        try:
+            target_idx = next(
+                i for i, x in enumerate(self.ins) if x.offset == target_offset
+            )
+        except StopIteration:
+            return False
+        body_start = cur + 1
+        # ``NOT_TAKEN`` (3.14) sits between POP_JUMP_IF_FALSE and the
+        # body to mark a constant-folded branch — skip it.
+        if body_start < len(self.ins) and self.ins[body_start].opname == "NOT_TAKEN":
+            body_start += 1
+        if target_idx <= body_start:
+            return False
+        # The body slice is everything from body_start up to (but not
+        # including) the target index. The target instruction itself is
+        # typically ``NOP`` (CPython emits a NOP as the if-block exit
+        # marker on 3.12+) which the outer walker will skip naturally.
+        body_slice = self.ins[body_start:target_idx]
+        sub_ctx = _Context(self.walker, list(body_slice), is_class=False)
+        body_stmts = sub_ctx.run()
+        # Advance past the entire if structure: jump op + optional
+        # NOT_TAKEN + the body + the target NOP marker.
+        self._consume(target_idx - self.pos)
+        self.pos = target_idx
+        if self.pos < len(self.ins) and self.ins[self.pos].opname == "NOP":
+            self._consume(1)
+            self.pos += 1
+        self.body.append(ir.If(test=test_name, body=body_stmts, orelse=[]))
+        return True
+
+    def _try_except_block(self) -> bool:
+        """Recognise ``try: <single import> except <Exc>: <single import>``.
+
+        Conservative shape match. The 3.11+ exception-table encoding
+        makes it easy to find the *start* of a try body via the
+        in-bytecode boundary, but cleanly finding the *end* of a
+        handler is hard: the compiler inlines a re-raise scaffold and
+        a forward jump back into the module's continuation, and a
+        single-instruction overrun silently drops every subsequent
+        module-level declaration.
+
+        Rather than risk that regression, the matcher only fires on
+        the narrow shape that motivated the work in the first place:
+
+            try:
+                from X import Y, Z    # or `import M`
+            except ImportError:
+                from A import Y, Z    # or `import M`
+
+        Anything else falls through and is recovered by the existing
+        flattening behaviour: imports survive at module scope (so
+        ``signature_match`` is unaffected), only the ``if`` / ``try``
+        indentation is lost.
+        """
+        import dis as _dis
+
+        parser = getattr(_dis, "_parse_exception_table", None)
+        if parser is None:
+            return False
+        entries = list(parser(self.walker.code))
+        if not entries:
+            return False
+        cur_offset = self.ins[self.pos].offset
+        match = next((e for e in entries if e.start == cur_offset), None)
+        if match is None:
+            return False
+        try:
+            body_end_idx = next(
+                i for i, x in enumerate(self.ins) if x.offset >= match.end
+            )
+            handler_idx = next(
+                i for i, x in enumerate(self.ins) if x.offset == match.target
+            )
+        except StopIteration:
+            return False
+
+        body_slice = self.ins[self.pos : body_end_idx]
+        # Gate: the try body must look exactly like a single import.
+        body_kinds = {ins.opname for ins in body_slice}
+        allowed_import_only = {
+            "LOAD_CONST",
+            "LOAD_SMALL_INT",
+            "IMPORT_NAME",
+            "IMPORT_FROM",
+            "STORE_NAME",
+            "STORE_GLOBAL",
+            "POP_TOP",
+            "RESUME",
+            "PUSH_NULL",
+            "NOP",
+            "JUMP_FORWARD",
+        }
+        if not body_kinds.issubset(allowed_import_only):
+            return False
+        if "IMPORT_NAME" not in body_kinds:
+            return False
+
+        body_ctx = _Context(self.walker, list(body_slice), is_class=False)
+        body_stmts = body_ctx.run()
+        if not body_stmts:
+            return False
+
+        # Walk the handler prologue: PUSH_EXC_INFO ; LOAD_NAME <Exc> ;
+        # CHECK_EXC_MATCH ; POP_JUMP_IF_FALSE ; (NOT_TAKEN)? ; POP_TOP.
+        exc_name: str = ""
+        cursor = handler_idx
+        if cursor < len(self.ins) and self.ins[cursor].opname == "PUSH_EXC_INFO":
+            cursor += 1
+        if cursor < len(self.ins) and self.ins[cursor].opname in {
+            "LOAD_NAME",
+            "LOAD_GLOBAL",
+        }:
+            exc_name = str(self.ins[cursor].argval)
+            cursor += 1
+        for expected in ("CHECK_EXC_MATCH", "POP_JUMP_IF_FALSE", "NOT_TAKEN"):
+            if cursor < len(self.ins) and self.ins[cursor].opname == expected:
+                cursor += 1
+        if cursor < len(self.ins) and self.ins[cursor].opname == "POP_TOP":
+            cursor += 1
+
+        # Bound the handler by the first POP_EXCEPT. Gate again on the
+        # same allow-list so any non-trivial handler falls through.
+        handler_end = cursor
+        while handler_end < len(self.ins):
+            if self.ins[handler_end].opname == "POP_EXCEPT":
+                break
+            handler_end += 1
+        if handler_end >= len(self.ins):
+            return False
+        handler_slice = self.ins[cursor:handler_end]
+        handler_kinds = {ins.opname for ins in handler_slice}
+        if not handler_kinds.issubset(allowed_import_only):
+            return False
+        if "IMPORT_NAME" not in handler_kinds:
+            return False
+
+        handler_ctx = _Context(self.walker, list(handler_slice), is_class=False)
+        handler_stmts = handler_ctx.run()
+        if not handler_stmts:
+            return False
+
+        # Advance past the entire try/handler region. After POP_EXCEPT
+        # the compiler emits a JUMP_FORWARD to the module's
+        # continuation and a small RERAISE scaffold — the outer walker
+        # absorbs both via its noop dispatch.
+        self.pos = handler_end
+        self._consume(1)
+        self.pos += 1
+        self.body.append(ir.Try(body=body_stmts, handlers=[(exc_name, handler_stmts)]))
+        return True
 
     def _try_binop_call(self) -> bool:
         op = self.ins[self.pos].opname

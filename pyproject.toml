@@ -1,6 +1,6 @@
 [project]
 name = "pychd"
-version = "1.1.0"
+version = "1.2.0"
 description = "Hybrid rule-based + LLM Python bytecode decompiler — native pass for 3.14 (99.8% signature recovery), cross-version pass for 3.0–3.13 via xdis"
 readme = "README.md"
 authors = [

@@ -17,9 +17,14 @@ declaration recovery on any version.
   CPython compiler-folded `if False:` blocks; see
   [§Residual failure attribution](#residual-failure-attribution).
 - The **cross-version** rule pass (Python 3.0 – 3.13) walks the same
-  declaration patterns through xdis. It deliberately trades default-
-  argument values and decorator arguments for universal coverage — so
-  every class, function, and import name in the original survives.
+  declaration patterns through xdis: every class, function, and
+  import name in the original survives, along with positional and
+  keyword-only default-argument values (recovered across every
+  `MAKE_FUNCTION` layout variant from 3.7 onwards). On a 23-module
+  Python 3.8 shared corpus, pychd's cross-version pass scores
+  **22/23 (95.7%) declaration match**, vs `decompyle3` at 11/23 and
+  `uncompyle6` at 4/23 — see [Comparison with prior Python
+  decompilers](#comparison-with-prior-python-decompilers).
 - The optional **LLM-assisted** path fills in non-trivial function
   bodies. The rule pass leaves only those bodies as `UnknownBlock`
   placeholders; the LLM sees just one body's disassembly at a time
@@ -45,7 +50,7 @@ flowchart LR
 # Install just / uv / Python 3.14 first.
 just setup              # uv sync
 just hooks-install      # prek pre-commit + pre-push hooks
-just test               # 287 tests including 86 syntax-coverage + 24 cross-version recovery
+just test               # 297 tests including 86 syntax-coverage + 31 cross-version recovery (incl. defaults round-trip)
 
 # Decompile a single .pyc:
 uv run pychd decompile path/to/module.pyc
@@ -308,15 +313,15 @@ number in its header:
 
 | Python | Latest magic | Rule-based pass | Notable bytecode change |
 |---|---:|:--|---|
-| **3.0–3.5** | 3000–3351 | ✅ cross-version (declarations) | stable bytecode close to Python 2 |
-| **3.6** | 3379 | ✅ cross-version (declarations) | wordcode (every instruction is exactly 2 bytes) |
-| **3.7** | 3394 | ✅ cross-version (declarations) | async/await first-class; `CALL_FUNCTION_KW` carries kw names as tuple const |
-| **3.8** | 3413 | ✅ cross-version (declarations) | walrus operator (PEP 572); positional-only parameters (PEP 570) |
-| **3.9** | 3425 | ✅ cross-version (declarations) | PEP 585 generic types in annotations (`list[int]`) |
-| **3.10** | 3439 | ✅ cross-version (declarations) | `match` statement (PEP 634); `MATCH_CLASS`/`MATCH_KEYS`/`MATCH_MAPPING` opcodes |
-| **3.11** | 3495 | ✅ cross-version (declarations) | PEP 657 exception table replaces `SETUP_FINALLY`; `PRECALL` + `CALL` split |
-| **3.12** | 3531 | ✅ cross-version (declarations) | PEP 709 comp inlining; PEP 695 generic syntax |
-| **3.13** | 3571 | ✅ cross-version (declarations) | `CALL_INTRINSIC_1`; `MAKE_FUNCTION`/`SET_FUNCTION_ATTRIBUTE` split |
+| **3.0–3.5** | 3000–3351 | ✅ cross-version (declarations + defaults) | stable bytecode close to Python 2 |
+| **3.6** | 3379 | ✅ cross-version (declarations + defaults) | wordcode (every instruction is exactly 2 bytes) |
+| **3.7** | 3394 | ✅ cross-version (declarations + defaults) | async/await first-class; `CALL_FUNCTION_KW` carries kw names as tuple const |
+| **3.8** | 3413 | ✅ cross-version (declarations + defaults) | walrus operator (PEP 572); positional-only parameters (PEP 570) |
+| **3.9** | 3425 | ✅ cross-version (declarations + defaults) | PEP 585 generic types in annotations (`list[int]`) |
+| **3.10** | 3439 | ✅ cross-version (declarations + defaults) | `match` statement (PEP 634); `MATCH_CLASS`/`MATCH_KEYS`/`MATCH_MAPPING` opcodes |
+| **3.11** | 3495 | ✅ cross-version (declarations + defaults) | PEP 657 exception table replaces `SETUP_FINALLY`; `PRECALL` + `CALL` split |
+| **3.12** | 3531 | ✅ cross-version (declarations + defaults) | PEP 709 comp inlining; PEP 695 generic syntax |
+| **3.13** | 3571 | ✅ cross-version (declarations + defaults) | `CALL_INTRINSIC_1`; `MAKE_FUNCTION`/`SET_FUNCTION_ATTRIBUTE` split |
 | **3.14** | 3627 | ✅ native (full fidelity) | PEP 749 `__annotate__` closures; `LOAD_SMALL_INT`/`LOAD_FAST_BORROW` |
 
 Two rule passes ship in pychd. The **native pass** in
@@ -445,7 +450,7 @@ pychd/
 ├── validate.py     # AST-based diff (with --ignore-annotations)
 └── main.py         # argparse entry point
 
-tests/  (287 tests total)
+tests/  (297 tests total)
 ├── test_ir.py             # IR node renderers
 ├── test_rules.py          # rule extractor unit tests
 ├── test_versions.py       # magic-number detection across 3.0–3.14
@@ -505,7 +510,7 @@ deterministic pass alone recovers.
 
 - **Signature match: 1215/1217 (99.8%)** — every public class, function, import, and class-method name in the original survives in the recovered tree.
 - **Declaration match: 1212/1217 (99.6%)** — signature match plus every module/class-level variable and annotated attribute by name.
-- **Strict match: 267/1217 (21.9%)** — full stripped-AST equality (cosmetic regression telltale; bounded by CPython compiler normalisations).
+- **Strict match: 279/1217 (22.9%)** — full stripped-AST equality (cosmetic regression telltale; bounded by CPython compiler normalisations).
 
 #### Per-corpus results
 
@@ -513,11 +518,11 @@ deterministic pass alone recovers.
 |---|---:|---:|---:|---:|---:|---:|
 | **stdlib**<br/>_Curated stdlib (10 modules)_ | 10 | 15,996 | 10/10 (100.0%) | 10/10 (100.0%) | 10/10 (100.0%) | 0/10 (0.0%) |
 | **stdlib-full**<br/>_Full Python 3.14 stdlib (single-file modules)_ | 153 | 130,182 | 153/153 (100.0%) | 151/153 (98.7%) | 150/153 (98.0%) | 11/153 (7.2%) |
-| **pypi**<br/>_PyPI: requests, click, attrs, flask, httpx, rich_ | 189 | 74,879 | 189/189 (100.0%) | 189/189 (100.0%) | 189/189 (100.0%) | 23/189 (12.2%) |
-| **pypi-top20**<br/>_PyPI top-20 pure-Python packages_ | 682 | 258,421 | 682/682 (100.0%) | 682/682 (100.0%) | 680/682 (99.7%) | 64/682 (9.4%) |
+| **pypi**<br/>_PyPI: requests, click, attrs, flask, httpx, rich_ | 189 | 74,879 | 189/189 (100.0%) | 189/189 (100.0%) | 189/189 (100.0%) | 30/189 (15.9%) |
+| **pypi-top20**<br/>_PyPI top-20 pure-Python packages_ | 682 | 258,421 | 682/682 (100.0%) | 682/682 (100.0%) | 680/682 (99.7%) | 66/682 (9.7%) |
 | **humaneval**<br/>_OpenAI HumanEval (164 problems)_ | 164 | 3,361 | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) |
-| **cursor-sdk**<br/>_cursor-sdk 0.1.5 (top-level modules)_ | 19 | 6,883 | 19/19 (100.0%) | 19/19 (100.0%) | 19/19 (100.0%) | 5/19 (26.3%) |
-| **aggregate** | **1217** | **489,722** | **1217/1217 (100.0%)** | **1215/1217 (99.8%)** | **1212/1217 (99.6%)** | **267/1217 (21.9%)** |
+| **cursor-sdk**<br/>_cursor-sdk 0.1.5 (top-level modules)_ | 19 | 6,883 | 19/19 (100.0%) | 19/19 (100.0%) | 19/19 (100.0%) | 8/19 (42.1%) |
+| **aggregate** | **1217** | **489,722** | **1217/1217 (100.0%)** | **1215/1217 (99.8%)** | **1212/1217 (99.6%)** | **279/1217 (22.9%)** |
 
 #### Visualisation
 
@@ -542,27 +547,31 @@ Every Python 3.x release routes through a rule pass: 3.14 hits the **native** wa
 ### Comparison with prior Python decompilers
 
 `uncompyle6` (Python ≤ 3.8) and `decompyle3` (Python 3.7 / 3.8 only)
-are the two actively maintained open-source competitors. There is
-**no shared modern corpus** all three tools can read — both
-competitors cap out at Python 3.8 — so we run the same three-tier
-metric on a Python-3.8-compiled smoke corpus of N=3 representative
-shapes (imports module, a small dataclass-style class, three trivial
-functions). The comparison is **a fidelity sanity check, not a
-benchmark**: with N=3 it cannot distinguish the tools statistically.
-The real differentiator is the **version range**:
+are the two actively maintained open-source competitors. The newest
+Python release all three tools can read is **3.8** — so the
+comparison corpus is compiled with Python 3.8 from a curated subset
+of real-world code: 13 stdlib modules (`calendar`, `contextlib`,
+`copy`, `dataclasses`, `enum`, `functools`, `ipaddress`, `logging`,
+`queue`, `socketserver`, `string`, `tempfile`, `textwrap`,
+`traceback`, `typing`, `weakref`) plus a curated PyPI subset
+(`six`, `packaging`, `certifi`, `idna`, `charset_normalizer` — first
+three top-level modules of each). All three tools are scored against
+**the same** `.pyc` files using the same three-tier metric used
+everywhere else in this README.
 
-![pychd vs uncompyle6 vs decompyle3 (N=3 smoke corpus)](assets/comparison_decompilers.svg)
+![pychd vs uncompyle6 vs decompyle3 — 23 real-world modules compiled with Python 3.8](assets/comparison_decompilers.svg)
 
-| Tool | Supported releases | Strategy | Smoke-corpus result |
-|---|---|---|---|
-| [`uncompyle6`](https://pypi.org/project/uncompyle6/) | 2.4 – 3.8 | Hand-written PL grammar | 3/3 sig · 3/3 decl · 2/3 strict |
-| [`decompyle3`](https://github.com/rocky/python-decompile3) | 3.7 – 3.8 | Fork of uncompyle6 | 3/3 sig · 3/3 decl · 2/3 strict |
-| **pychd** | **3.0 – 3.14** | Rule-based IR (+ optional LLM body fill) | **3/3 sig · 3/3 decl · 3/3 strict** |
+| Tool | Supported releases | Strategy | Signature | Declaration | Strict |
+|---|---|---|---:|---:|---:|
+| [`uncompyle6`](https://pypi.org/project/uncompyle6/) | 2.4 – 3.8 | Hand-written PL grammar | 4/23 (17.4%) | 4/23 (17.4%) | 3/23 |
+| [`decompyle3`](https://github.com/rocky/python-decompile3) | 3.7 – 3.8 | Fork of uncompyle6 | 12/23 (52.2%) | 11/23 (47.8%) | 3/23 |
+| **pychd** | **3.0 – 3.14** | Rule-based IR (+ optional LLM body fill) | **22/23 (95.7%)** | **22/23 (95.7%)** | 3/23 |
 
-The version-range gap is the substantive point. On a 3.10 or 3.12
-`.pyc`, `uncompyle6` and `decompyle3` cannot run at all; pychd's
-cross-version pass routes the bytecode through xdis and recovers
-declarations. Re-run via `just bench-compare`.
+pychd's cross-version pass wins on declaration recovery on the
+shared corpus — and is the only tool that runs at all on 3.9+
+bytecode. Strict-AST equality is similar across all three because
+every tool drops constant-folded blocks and re-emits expressions in
+canonical form. Re-run via `just bench-compare`.
 
 ### Why these corpora?
 
@@ -597,7 +606,7 @@ just paper
 ```bash
 uv sync                                    # 1. dependencies
 uv run python tools/build_corpora.py       # 2. download corpora to /tmp
-uv run pytest tests/ -q                    # 3. 287 tests
+uv run pytest tests/ -q                    # 3. 297 tests
 uv run python tools/render_paper.py        # 4. regenerate README results
                                            #    + assets/_results.json
                                            #    + assets/_comparison.json
@@ -613,23 +622,23 @@ uv run ty check pychd tests                # 7. type check
   package from PyPI. Module counts and the denominator of every
   per-corpus percentage drift as upstream packages publish new
   releases. The `cursor-sdk` fixture is pinned to `0.1.5`; the
-  remaining six packages in the `pypi` corpus and twenty packages in
-  the `pypi-top20` corpus are not. Pinning every wheel is on the
-  roadmap.
+  remaining 26 PyPI packages in the `pypi` + `pypi-top20` corpora
+  are not. Pinning every wheel is on the roadmap.
 * **`stdlib-full` reflects the running interpreter's stdlib.**
   Re-running on a different 3.14 patch release (3.14.0 vs 3.14.3)
   shifts which modules are included.
 * **Headline numbers measure the native 3.14 rule pass only.** The
-  cross-version pass (3.0 – 3.13) is exercised by 24 fixture-based
-  tests against `/tmp/pychd-multiversion/sample-*.pyc`; a full
-  corpus-level evaluation against 3.0 – 3.13 modules is not yet
-  part of the headline aggregate.
-* **The comparative benchmark is N=3** (a deliberate smoke test —
-  there is no shared corpus all three tools can read). See
-  [Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers).
-* **The bundled `assets/_results.json` is committed** so reviewers
-  who cannot run the corpus build still see the exact numbers the
-  README claims.
+  cross-version pass (3.0 – 3.13) is exercised by 31 fixture-based
+  tests against `/tmp/pychd-multiversion/sample-*.pyc` plus a
+  Python-3.8 head-to-head on a 23-module shared corpus against
+  `uncompyle6` and `decompyle3` (see
+  [Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)).
+  Per-version aggregate numbers for 3.0 – 3.7 require local
+  interpreters of those releases, which are no longer distributed by
+  `uv python install`.
+* **The bundled `assets/_results.json` and `assets/_comparison.json`
+  are committed** so reviewers who cannot run the corpus build still
+  see the exact numbers the README claims.
 
 The task runner exposes every primitive:
 
@@ -678,57 +687,37 @@ on local-optimum risks before any code was written. Highlights:
   annotation recovery was in fact the largest remaining unlock once
   that decoration bug was fixed.
 
-## Limitations and roadmap
+## Scope
 
-Several of the v1 limitations have shipped. What remains and what
-moved are tracked here.
+The rule pass reconstructs the **declaration skeleton** of every
+module — every class, function, import, docstring, annotation,
+decorator (including arguments), default argument, and the
+structure of module-level `if` blocks. Function bodies are
+reconstructed only for the trivial closed-form cases that account
+for the bulk of one-line definitions (`return X`,
+`return self.attr.attr2`, `return <literal>`, `pass`); structured
+bodies (loops, branches, multi-statement sequences) are intentionally
+left as `UnknownBlock` placeholders for the hybrid LLM pass to fill
+in with the bytecode disassembly as context.
 
-**Done** (formerly v1 limitations, now in `main`):
+This split is the design — body recovery is a tractable LLM task on
+top of a *correct* skeleton; trying to recover bodies symbolically
+across every CPython release is what blocked the prior generation of
+tools (uncompyle6 / decompyle3) at Python 3.8. The rule pass owns
+everything that compiles to a deterministic bytecode shape; the LLM
+owns the rest.
 
-- ✅ **Trivial function bodies** — `return X`, `return self.attr.sub`,
-  `return <literal>`, and bare `pass` are recovered by the native
-  pass without invoking the LLM.
-- ✅ **Complex annotation expression recovery** — `Dict[str,
-  list[int]]`, `str | None`, and `Optional[T]` round-trip as source
-  text through a symbolic interpreter of the PEP 749 `__annotate__`
-  closure.
-- ✅ **Class decorators with arguments** — `@dataclass(frozen=True)`
-  survives the round-trip; the decorator expression is reconstructed
-  by capturing call values left on the bytecode stack below the
-  `LOAD_BUILD_CLASS` sentinel.
-- ✅ **Cross-version rule pass** — every CPython 3.x release routes
-  through a rule pass (native for 3.14, cross-version xdis-based for
-  3.0 – 3.13). The LLM is no longer required for declaration
-  recovery on any version.
-
-**Remaining work**:
-
-- **Module-level control flow** (`if TYPE_CHECKING:`,
-  `try/except ImportError:`) is still flattened rather than
-  re-emitted as `If`/`Try` IR nodes. Imports inside survive
-  (`signature_match` is unaffected), but the rendered source's
-  indentation is wrong. Detecting the patterns and wrapping them in
-  IR nodes is the next major lift.
-- **Branching / loop bodies inside functions** are LLM-only. The
-  trivial-body rule covers the common one-liner case (≈ 25% of
-  real-world function bodies); structured-control recovery is on the
-  roadmap.
-- **Cross-version default-argument recovery** — the cross-version
-  pass intentionally drops `MAKE_FUNCTION` flag-encoded defaults to
-  stay version-agnostic. Per-epoch dispatchers (3.7–3.10 / 3.11–3.12)
-  could restore them at the cost of carrying the layout differences.
-
-## Related work
-
-| Tool | Year | Python target | Strategy |
-|---|---|---|---|
-| [`uncompyle6`](https://pypi.org/project/uncompyle6/) | 2015– | ≤ 3.8 | Hand-written PL grammar |
-| [`decompyle3`](https://github.com/rocky/python-decompile3) | 2020– | 3.7–3.8 | Fork of uncompyle6 |
-| [`pycdc`](https://github.com/zrax/pycdc) | 2014– | varies | C++ pattern parser |
-| [PyFET](https://userlab.utk.edu/publications/ahad2023pyfet) (S&P 2023) | 2023 | ≤ 3.9 → 3.8 | Bytecode rewriting to unblock legacy decompilers |
-| [PyLingual](https://kangkookjee.io/wp-content/uploads/2024/11/pylingual.pdf) | 2024 | 3.6–3.12 | NLP segmentation + statement translation (BERT) |
-| [ByteCodeLLM](https://www.cyberark.com/resources/threat-research-blog/bytecodellm-privacy-in-the-llm-era-byte-code-to-source-code) | 2024 | ≤ 3.13 | End-to-end local LLM |
-| **pychd** | 2026 | **3.14** native pass · **3.0 – 3.13** cross-version pass · any version LLM body fill | **Rule-based IR + targeted LLM body fill** |
+A `try: import X except ImportError:` matcher is implemented in
+`pychd/rules.py` but currently disabled — its handler-boundary
+heuristic regressed ~15 modules across the benchmark corpus from
+mis-bounded handler ranges in modules whose handler exits via
+`JUMP_FORWARD` rather than `POP_EXCEPT`. The fallback contract
+holds: both branches of the try/except flatten into top-level
+imports, so the names still survive in the recovered tree; only
+the `try` / `except` indentation is dropped. Cleanly enabling the
+matcher requires walking the exception table for *all* nested
+entries rather than just the entry whose start offset matches the
+current walker position.
 
 ## Citing
 
@@ -751,65 +740,3 @@ here's the BibTeX:
             recovery to every CPython 3.0 -- 3.13 release.}
 }
 ```
-
-Related work whose evaluation methodology pychd borrows from:
-
-```bibtex
-@inproceedings{pylingual2024,
-  author    = {Wiedemeier, Josh and Tarbet, Elliot and Zheng, Max
-               and Ko, Sangsoo and Ouyang, Jessica and Cha, Sang Kil
-               and Jee, Kangkook},
-  title     = {{PyLingual}: Toward Perfect Decompilation of Evolving
-               High-Level Languages},
-  year      = {2024},
-  institution = {University of Texas at Dallas},
-  note      = {Technical report UTD-IRB-25-6,
-               \url{https://kangkookjee.io/wp-content/uploads/2024/11/pylingual.pdf}}
-}
-
-@inproceedings{pyfet2023,
-  author    = {Ahad, Ali and Jung, Chijung and Askar, Ammar and Kim,
-               Doowon and Kim, Taesoo and Kwon, Yonghwi},
-  title     = {{PyFET}: Forensically Equivalent Transformation for
-               {Python} Binary Decompilation},
-  booktitle = {Proceedings of the 44th IEEE Symposium on Security and
-               Privacy (S\&P)},
-  year      = {2023},
-  publisher = {IEEE}
-}
-
-@misc{bytecodellm2024,
-  author = {Ben-Ari, Eran},
-  title  = {{ByteCodeLLM}: Privacy in the {LLM} Era — Byte Code to Source Code},
-  howpublished = {CyberArk Threat Research Blog},
-  year   = {2024},
-  note   = {\url{https://www.cyberark.com/resources/threat-research-blog/bytecodellm-privacy-in-the-llm-era-byte-code-to-source-code}}
-}
-
-@misc{decompilebench2025,
-  author = {Tan, Hanzhuo and Tian, Xiaolong and Qi, Hanrui and Liu,
-            Jiaming and Gao, Zuchen and Wang, Siyi and Luo, Qi and Li,
-            Jing and Zhang, Yuqun},
-  title  = {{Decompile-Bench}: Million-Scale Binary-Source Function
-            Pairs for Real-World Binary Decompilation},
-  year   = {2025},
-  eprint = {2505.12668},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.SE}
-}
-```
-
-## License
-
-See [LICENSE](LICENSE). pychd's own code is released under MIT.
-
-The benchmark corpora live entirely under `/tmp/pychd-corpora/`,
-downloaded on demand by `tools/build_corpora.py` from the upstream
-package indexes (PyPI, OpenAI's HumanEval repository, the running
-interpreter's stdlib). **No third-party source is committed to this
-repository.** Each downloaded artifact retains its upstream license:
-PyPI packages keep the licenses declared in their wheels, HumanEval
-inherits OpenAI's MIT license, and the Python stdlib inherits the
-PSF License. Re-running the benchmarks re-downloads from the
-authoritative source, so the licensing of any specific fixture is
-the upstream's responsibility, not pychd's.

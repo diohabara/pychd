@@ -600,18 +600,57 @@ class _Context:
         self.stack.pop()  # code object
         self._consume(1)
 
-        # Discard the flag-encoded attachments (defaults / kwdefaults /
-        # annotations / closure) — the rule pass intentionally drops
-        # defaults / annotations on the cross-version path.
+        # Capture the flag-encoded attachments (defaults / kwdefaults /
+        # annotations / closure). Layout from the bytecode spec:
+        #
+        #   stack bottom → top: defaults, kwdefaults, annotations, closure
+        #
+        # Each bit of ``MAKE_FUNCTION``'s arg flag indicates which slot
+        # is present. Recovery scope: we keep positional ``defaults``
+        # (a tuple of literals) and ``kwdefaults`` (a dict literal);
+        # ``annotations`` and ``closure`` are still dropped because
+        # neither survives cleanly cross-version without per-epoch
+        # disassembly logic.
+        defaults: tuple | None = None
+        kwdefaults: dict | None = None
         if (is_old_layout or is_split_layout) and n_flag_args:
-            self._pop_n(n_flag_args)
+            slots: list[Any] = self._pop_n(n_flag_args)
+            # CPython pushes the four optional attachments in flag-bit
+            # order from bottom to top: defaults (0x01), kwdefaults
+            # (0x02), annotations (0x04), closure (0x08). ``_pop_n``
+            # returns the slice in bottom-first order, so the index
+            # alignment is bits-low-first ↔ slots-bottom-first.
+            bits = [b for b in (0x01, 0x02, 0x04, 0x08) if flag & b]
+            assignment = dict(zip(bits, slots))
+            d_val = assignment.get(0x01)
+            if isinstance(d_val, _Literal) and isinstance(d_val.value, tuple):
+                defaults = d_val.value
+            kw_val = assignment.get(0x02)
+            if isinstance(kw_val, _Literal) and isinstance(kw_val.value, dict):
+                kwdefaults = kw_val.value
 
         # 3.13+: ``SET_FUNCTION_ATTRIBUTE`` chain after MAKE_FUNCTION.
+        # Same semantics as the flag bits above — recover defaults /
+        # kwdefaults; drop closure / annotate attachments.
+        sfa_defaults = 0x01
+        sfa_kwdefaults = 0x02
         while (
             self._peek() is not None and self._peek().opname == "SET_FUNCTION_ATTRIBUTE"
         ):
-            if self.stack:
-                self.stack.pop()
+            sfa_flag = self._peek().arg or 0
+            top = self.stack.pop() if self.stack else None
+            if (
+                sfa_flag == sfa_defaults
+                and isinstance(top, _Literal)
+                and isinstance(top.value, tuple)
+            ):
+                defaults = top.value
+            elif (
+                sfa_flag == sfa_kwdefaults
+                and isinstance(top, _Literal)
+                and isinstance(top.value, dict)
+            ):
+                kwdefaults = top.value
             self._consume(1)
 
         # Older versions: a name LOAD_CONST may follow MAKE_FUNCTION
@@ -658,7 +697,14 @@ class _Context:
                 decorators.append(self.stack.pop().name)
         decorators.reverse()
 
-        func_def = _build_function(self.walker, code_obj, name, decorators)
+        func_def = _build_function(
+            self.walker,
+            code_obj,
+            name,
+            decorators,
+            defaults=defaults,
+            kwdefaults=kwdefaults,
+        )
         if self.is_class and name in _CLASS_IMPLICIT:
             return True
         if name == "__annotate__":
@@ -778,14 +824,41 @@ class _Context:
             return True
         if op == "BUILD_MAP":
             n = cur.arg or 0
-            self._pop_n(2 * n)
-            self.stack.append(_Sentinel("dict"))
+            pairs = self._pop_n(2 * n)
+            built: dict = {}
+            for i in range(0, len(pairs), 2):
+                k_val = _literal_value(pairs[i])
+                v_val = _literal_value(pairs[i + 1]) if i + 1 < len(pairs) else None
+                if k_val is _UNRECOVERED:
+                    self.stack.append(_Sentinel("dict"))
+                    self._consume(1)
+                    return True
+                built[k_val] = v_val if v_val is not _UNRECOVERED else None
+            self.stack.append(_Literal(built))
             self._consume(1)
             return True
         if op == "BUILD_CONST_KEY_MAP":
             n = cur.arg or 0
-            self._pop_n(n + 1)
-            self.stack.append(_Sentinel("dict"))
+            if not self.stack or not isinstance(self.stack[-1], _Literal):
+                self._pop_n(n + 1)
+                self.stack.append(_Sentinel("dict"))
+                self._consume(1)
+                return True
+            keys_lit = self.stack.pop()
+            keys = keys_lit.value if isinstance(keys_lit.value, tuple) else ()
+            values = self._pop_n(n)
+            built = {}
+            ok = True
+            for k, v in zip(keys, values):
+                v_val = _literal_value(v)
+                if v_val is _UNRECOVERED:
+                    ok = False
+                    break
+                built[k] = v_val
+            if ok:
+                self.stack.append(_Literal(built))
+            else:
+                self.stack.append(_Sentinel("dict"))
             self._consume(1)
             return True
         if op in {"LIST_EXTEND", "SET_UPDATE", "DICT_UPDATE", "DICT_MERGE"}:
@@ -886,11 +959,14 @@ def _build_function(
     code: Any,
     name: str,
     decorators: list[str],
+    *,
+    defaults: tuple | None = None,
+    kwdefaults: dict | None = None,
 ) -> ir.FunctionDef:
     flags = getattr(code, "co_flags", 0) or 0
     is_async = bool(flags & _CO_COROUTINE) or bool(flags & _CO_ASYNC_GENERATOR)
     is_generator = bool(flags & _CO_GENERATOR)
-    args = _args_from_code(code)
+    args = _args_from_code(code, defaults=defaults, kwdefaults=kwdefaults)
     docstring = _extract_docstring(walker, code)
     body: list[ir.Stmt] = [
         ir.UnknownBlock(
@@ -910,7 +986,12 @@ def _build_function(
     )
 
 
-def _args_from_code(code: Any) -> ir.Arguments:
+def _args_from_code(
+    code: Any,
+    *,
+    defaults: tuple | None = None,
+    kwdefaults: dict | None = None,
+) -> ir.Arguments:
     pos_total = getattr(code, "co_argcount", 0) or 0
     pos_only = getattr(code, "co_posonlyargcount", 0) or 0
     kw_only = getattr(code, "co_kwonlyargcount", 0) or 0
@@ -944,6 +1025,25 @@ def _args_from_code(code: Any) -> ir.Arguments:
     kwarg = None
     if has_varkw and idx < len(varnames):
         kwarg = ir.Arg(name=varnames[idx])
+
+    # Attach positional defaults right-to-left, matching how CPython
+    # binds them to the *trailing* slots of the positional list. The
+    # ``defaults`` tuple recovered from MAKE_FUNCTION carries one entry
+    # per defaulted positional, in declaration order.
+    if defaults:
+        positional = posonly_args + args
+        for offset, value in enumerate(reversed(list(defaults))):
+            target_idx = len(positional) - 1 - offset
+            if 0 <= target_idx < len(positional):
+                positional[target_idx].default = _format_literal(value)
+        posonly_args = positional[:pos_only]
+        args = positional[pos_only:]
+
+    # Keyword-only defaults map by name to ``co_varnames``.
+    if kwdefaults:
+        for a in kwonly_args:
+            if a.name in kwdefaults:
+                a.default = _format_literal(kwdefaults[a.name])
 
     return ir.Arguments(
         posonly=posonly_args,
@@ -1057,6 +1157,37 @@ def _render_value(v: Any) -> str | None:
         if v.kind == "set":
             return "set()" if not rendered else f"{{{joined}}}"
     return None
+
+
+_UNRECOVERED = object()
+
+
+def _literal_value(v: Any) -> Any:
+    """Unwrap a stack value into a real Python literal, or ``_UNRECOVERED``.
+
+    Used by ``BUILD_MAP`` / ``BUILD_CONST_KEY_MAP`` to materialise an
+    honest ``dict`` from the value stack so the function-defaults rule
+    can later see ``isinstance(top, _Literal) and isinstance(top.value,
+    dict)`` and harvest it as ``kwdefaults``.
+    """
+    if isinstance(v, _Literal):
+        return v.value
+    if isinstance(v, _Name):
+        return _UNRECOVERED  # symbolic; cannot freeze into a Python literal
+    if isinstance(v, _Collection):
+        items: list = []
+        for it in v.items:
+            uv = _literal_value(it)
+            if uv is _UNRECOVERED:
+                return _UNRECOVERED
+            items.append(uv)
+        if v.kind == "list":
+            return items
+        if v.kind == "tuple":
+            return tuple(items)
+        if v.kind == "set":
+            return set(items)
+    return _UNRECOVERED
 
 
 def _format_literal(value: Any) -> str:
