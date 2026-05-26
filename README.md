@@ -805,6 +805,32 @@ restricts itself to the declaration-shaped opcode patterns that have
 been stable across the entire Python 3 series, deliberately trading
 default-argument values for universal coverage.
 
+#### Cross-version full recovery via hybrid-rewrite
+
+The deterministic cross-version pass is declaration-only by design,
+but **hybrid-rewrite mode reaches full-body recovery on every
+3.x release** because the LLM consumes the version-specific
+disassembly text directly. The rule pass still produces the
+declaration scaffold; the LLM uses xdis' disassembly (which is
+already version-aware) as the authoritative source for bodies.
+
+End-to-end on the fixture sample (10 LoC dataclass + greet methods),
+one Codex call per module:
+
+| Python | Rule pass | Hybrid-rewrite ast_match | Wall-clock |
+|---|---|---|---|
+| 3.8 | cross-version | ✅ | ~24s |
+| 3.9 | cross-version | ✅ | ~24s |
+| 3.10 | cross-version | ✅ | ~20s |
+| 3.11 | cross-version | ✅ | ~17s |
+| 3.12 | cross-version | ✅ | ~20s |
+| 3.13 | cross-version | ✅ | ~23s |
+| 3.14 | native | ✅ | ~22s |
+
+Reproduce: ``uv run python tools/build_multiversion_fixtures.py``
+followed by ``uv run pychd decompile /tmp/pychd-multiversion/sample-3.X.pyc
+--hybrid-rewrite --backend codex`` for each X.
+
 ### What's hard about each version
 
 The bytecode specification is **not stable across Python versions**.
