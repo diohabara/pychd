@@ -366,3 +366,66 @@ class TestRender:
         assert '"""Doc."""' in out
         assert "KIND = 1" in out
         assert "def __init__(self, x):" in out
+
+
+class TestModuleLevelRecovery:
+    """Regression tests for module-level constructs the rule pass used
+    to mis-recover (for-loop variable leaks, ``MAP_ADD`` dict literals,
+    ``if __name__ == "__main__":``)."""
+
+    def test_for_loop_variable_is_not_leaked_as_module_assign(self):
+        """``for x in iterable: side_effect`` used to emit
+        ``x = iterable`` as a top-level assign — exposing the iterator
+        variable to module scope. The for-skip walker drops the loop
+        entirely now."""
+        import textwrap
+
+        src = textwrap.dedent(
+            """\
+            VALUES = (1, 2, 3)
+            REGISTRY = []
+            for value in VALUES:
+                REGISTRY.append(value * 2)
+            """
+        )
+        result = _run(src)
+        out = _renders_to_valid_python(result)
+        assert "VALUES" in out
+        assert "REGISTRY" in out
+        # Loop variable must not appear as a module-level Assign.
+        assert "value = " not in out
+
+    def test_dict_literal_with_tuple_keys_recovered(self):
+        """Non-literal keys force ``BUILD_MAP 0`` + iterative
+        ``MAP_ADD`` — the shape ``_compat_pickle.NAME_MAPPING`` uses."""
+        import textwrap
+
+        src = textwrap.dedent(
+            """\
+            MAP = {('a', 1): ('x', 'X'), ('b', 2): ('y', 'Y')}
+            """
+        )
+        result = _run(src)
+        out = _renders_to_valid_python(result)
+        assert "MAP" in out
+        # The recovered dict should have both entries — not just the
+        # last value, which was the rule-pass bug before MAP_ADD support.
+        assert "'a'" in out and "'b'" in out
+
+    def test_if_main_block_survives(self):
+        """``if __name__ == "__main__":`` is now recognised as a
+        ``ir.If`` with the comparison preserved verbatim."""
+        import textwrap
+
+        src = textwrap.dedent(
+            """\
+            def main():
+                pass
+
+            if __name__ == "__main__":
+                main()
+            """
+        )
+        result = _run(src)
+        out = _renders_to_valid_python(result)
+        assert "if __name__ == '__main__':" in out

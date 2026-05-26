@@ -212,6 +212,21 @@ class _Context:
         # invisible by the time we reach STORE_SUBSCR.
         if self._try_annotation_store():
             return True
+        # Module-level for-loops (and PEP 709 inlined comprehensions)
+        # leak loop variables into our top-level body as bogus
+        # ``excname = PYTHON2_EXCEPTIONS`` assigns. Detect the
+        # ``GET_ITER`` / ``FOR_ITER`` boundary and skip the loop slice
+        # entirely. This must run before ``_try_simple_store`` so the
+        # loop-variable ``STORE_NAME`` never reaches it.
+        if self._try_skip_loop():
+            return True
+        # Module-level subscript assigns (``dict[key] = value``) consume
+        # 3 stack slots without leaving any value on stack. Recognise
+        # this and emit a placeholder ``UnknownBlock`` so the body of
+        # the surrounding scope keeps its declarations intact instead
+        # of accumulating phantom Assigns from drained stack values.
+        if self._try_store_subscr():
+            return True
         # ``_try_if_block`` fires at module scope, before the
         # conditional's test pushes its ``LOAD_NAME`` onto our model
         # stack. It's a no-op inside function / class bodies where
@@ -247,6 +262,112 @@ class _Context:
             return True
 
         return False
+
+    def _try_skip_loop(self) -> bool:
+        """Skip a module-level ``for`` loop entirely.
+
+        Detects ``GET_ITER`` (followed by ``FOR_ITER target``) and
+        advances past the entire loop body (up to and including the
+        ``END_FOR`` / ``POP_TOP`` cleanup that immediately follows the
+        loop target). The iterator value and per-iteration loop
+        variables are *not* emitted into the recovered body — they're
+        scope-locals that don't survive past the loop in source form
+        either, and emitting them as module-level Assigns was the
+        single biggest source of false-positive declarations in the
+        earlier rule pass (the ``excname = PYTHON2_EXCEPTIONS`` leak
+        from ``_compat_pickle.py`` is the canonical example).
+
+        Any accumulator value present on the model stack before
+        ``GET_ITER`` (e.g. a ``BUILD_MAP`` for an inlined dict
+        comprehension) is preserved so the trailing ``STORE_NAME``
+        can still pick it up — we just lose the comprehension body
+        and report ``X = {}`` / ``X = []`` rather than the full
+        ``{k: v for ...}``. Better than silently dropping the assign.
+        """
+        ins = self.ins[self.pos]
+        if ins.opname not in {"GET_ITER", "FOR_ITER"}:
+            return False
+        # If we're sitting on GET_ITER, the iter argument is on stack
+        # and FOR_ITER follows. Advance to FOR_ITER.
+        if ins.opname == "GET_ITER":
+            # Pop the iterable from our model stack (the real iter
+            # value is intentionally untracked).
+            if self.stack:
+                self.stack.pop()
+            self._consume(1)
+            self.pos += 1
+            # Optional CACHE / EXTENDED_ARG bookkeeping between
+            # GET_ITER and FOR_ITER on some 3.x releases.
+            while self.pos < len(self.ins) and self.ins[self.pos].opname in {
+                "CACHE",
+                "EXTENDED_ARG",
+            }:
+                self._consume(1)
+                self.pos += 1
+            if self.pos >= len(self.ins) or self.ins[self.pos].opname != "FOR_ITER":
+                return True
+        # Now at FOR_ITER. Walk to the jump target.
+        for_iter = self.ins[self.pos]
+        target_offset = for_iter.argval
+        if target_offset is None:
+            self._consume(1)
+            self.pos += 1
+            return True
+        try:
+            target_idx = next(
+                i for i, x in enumerate(self.ins) if x.offset == target_offset
+            )
+        except StopIteration:
+            self._consume(1)
+            self.pos += 1
+            return True
+        # Consume everything from FOR_ITER up to (but not including) the
+        # target instruction.
+        skip = max(1, target_idx - self.pos)
+        self._consume(skip)
+        self.pos = target_idx
+        # Past the target, CPython emits the loop cleanup epilogue:
+        # ``END_FOR`` (3.12+) or ``POP_TOP`` (3.11-). Swallow it so
+        # the outer walker doesn't try to interpret it as a stack op.
+        while self.pos < len(self.ins) and self.ins[self.pos].opname in {
+            "END_FOR",
+            "POP_TOP",
+            "POP_BLOCK",
+        }:
+            # ``POP_TOP`` here is the loop's iterator cleanup, not a
+            # real expression statement — gate on the previous op
+            # being a loop end.
+            if self.ins[self.pos].opname == "POP_TOP" and self.stack:
+                # POP_TOP after a loop drops the iter sentinel; we
+                # didn't model the iter on our stack, so just consume.
+                pass
+            self._consume(1)
+            self.pos += 1
+            break
+        return True
+
+    def _try_store_subscr(self) -> bool:
+        """Consume ``STORE_SUBSCR`` without emitting a phantom Assign.
+
+        ``a[k] = v`` compiles to ``<v> ; <a> ; <k> ; STORE_SUBSCR``.
+        The rule pass models scalars on its shadow stack but cannot
+        reconstruct the original ``a[k] = v`` statement, so the
+        cleanest recovery is to drop the three operands and emit
+        nothing at module/class scope. Without this matcher the
+        operands stay on stack and the next ``STORE_NAME`` would pick
+        up the wrong value (the canonical ``NAME_MAPPING = (...)``
+        leak from for-loop bodies in ``_compat_pickle.py``).
+        """
+        if self.ins[self.pos].opname != "STORE_SUBSCR":
+            return False
+        # Pop up to three values: key, container, value.
+        for _ in range(3):
+            if not self.stack:
+                break
+            self.stack.pop()
+        self._consume(1)
+        self.pos += 1
+        return True
 
     def _try_push(self) -> bool:
         ins = self.ins[self.pos]
@@ -760,7 +881,19 @@ class _Context:
         # still emit a placeholder so the *name* survives. The metric
         # cares about presence, not RHS fidelity.
         if not self.stack:
-            self.body.append(ir.Assign(target=target, value="..."))
+            # Detect inlined comprehensions: the preceding instruction
+            # window typically ends with END_FOR / POP_TOP after a
+            # MAP_ADD / LIST_APPEND / SET_ADD loop. In that case the
+            # accumulator literal is what was *supposed* to be on the
+            # stack — guess the type from the trailing MAP/LIST/SET
+            # opcode so the assign at least carries a same-shape RHS.
+            kind_hint = self._guess_comprehension_kind()
+            placeholder = {
+                "list": "[]",
+                "set": "set()",
+                "dict": "{}",
+            }.get(kind_hint, "...")
+            self.body.append(ir.Assign(target=target, value=placeholder))
             self._consume(1)
             self.pos += 1
             return True
@@ -773,6 +906,28 @@ class _Context:
             return True
         self.body.append(ir.Assign(target=target, value=rendered))
         return True
+
+    def _guess_comprehension_kind(self) -> str | None:
+        """Look backwards from the current position for a comprehension
+        accumulator opcode (``MAP_ADD`` / ``LIST_APPEND`` / ``SET_ADD``).
+
+        We scan at most 50 instructions back — comprehensions don't get
+        much larger than that without spilling to a real loop.
+        Returns one of ``"dict"`` / ``"list"`` / ``"set"`` or ``None``
+        when no comprehension pattern is detected.
+        """
+        for i in range(self.pos - 1, max(-1, self.pos - 50), -1):
+            op = self.ins[i].opname
+            if op == "MAP_ADD":
+                return "dict"
+            if op == "LIST_APPEND":
+                return "list"
+            if op == "SET_ADD":
+                return "set"
+            if op in {"STORE_NAME", "STORE_GLOBAL"}:
+                # Hit the previous statement boundary — give up.
+                return None
+        return None
 
     def _try_pop_top(self) -> bool:
         if self.ins[self.pos].opname != "POP_TOP":
@@ -900,6 +1055,60 @@ class _Context:
             self._consume(1)
             self.pos += 1
             return True
+        if op == "MAP_ADD":
+            # ``MAP_ADD i``: pop ``(k, v)`` from the top, look up the
+            # accumulating dict ``i`` slots below the (now popped) pair,
+            # and append ``(k, v)`` to it. CPython uses this both for
+            # dict comprehensions *and* for plain module-level dict
+            # literals whose keys are non-literal (e.g. tuple keys —
+            # the ``_compat_pickle.NAME_MAPPING`` shape).
+            if len(self.stack) < 2:
+                self._consume(1)
+                self.pos += 1
+                return True
+            v = self.stack.pop()
+            k = self.stack.pop()
+            i = ins.arg or 1
+            dict_idx = len(self.stack) - i
+            if 0 <= dict_idx < len(self.stack):
+                target = self.stack[dict_idx]
+                if isinstance(target, _Mapping):
+                    target.items.append((k, v))
+            self._consume(1)
+            self.pos += 1
+            return True
+        if op == "LIST_APPEND":
+            # ``LIST_APPEND i``: pop the top, append to list ``i`` slots
+            # below (after the pop). Used by list comprehensions.
+            if not self.stack:
+                self._consume(1)
+                self.pos += 1
+                return True
+            v = self.stack.pop()
+            i = ins.arg or 1
+            list_idx = len(self.stack) - i
+            if 0 <= list_idx < len(self.stack):
+                target = self.stack[list_idx]
+                if isinstance(target, _Collection) and target.kind == "list":
+                    target.items.append(v)
+            self._consume(1)
+            self.pos += 1
+            return True
+        if op == "SET_ADD":
+            if not self.stack:
+                self._consume(1)
+                self.pos += 1
+                return True
+            v = self.stack.pop()
+            i = ins.arg or 1
+            set_idx = len(self.stack) - i
+            if 0 <= set_idx < len(self.stack):
+                target = self.stack[set_idx]
+                if isinstance(target, _Collection) and target.kind == "set":
+                    target.items.append(v)
+            self._consume(1)
+            self.pos += 1
+            return True
         return False
 
     # ------------------------------------------------------------------
@@ -907,20 +1116,25 @@ class _Context:
     # ------------------------------------------------------------------
 
     def _try_if_block(self) -> bool:
-        """Recognise ``if <name>:`` blocks at module scope.
+        """Recognise ``if <expr>:`` blocks at module scope.
 
-        Targets the canonical ``if TYPE_CHECKING:`` typing-guard
-        pattern: ``LOAD_NAME X ; (TO_BOOL)? ; POP_JUMP_IF_FALSE T
-        ; (NOT_TAKEN)?``. Anything more complex than a bare name (e.g.
-        boolean ``or`` / ``and``, attribute access, calls) is ignored
-        — those rarely guard imports and add disproportionate
-        complexity.
+        Two shapes are recognised:
 
-        On a match we slice out the if-body instructions, run a fresh
-        ``_Context`` over them, and emit a single ``ir.If`` node. The
-        result is that ``if TYPE_CHECKING: from x import y`` survives
-        with correct indentation instead of being flattened to a
-        top-level import.
+        1. **Bare-name guard** (the historical case, e.g.
+           ``if TYPE_CHECKING:``):
+           ``LOAD_NAME X ; (TO_BOOL)? ; POP_JUMP_IF_FALSE T ; (NOT_TAKEN)?``.
+        2. **Name-vs-string comparison** (the
+           ``if __name__ == "__main__":`` pattern):
+           ``LOAD_NAME X ; LOAD_CONST 'literal' ; COMPARE_OP == ;
+           POP_JUMP_IF_FALSE T ; (NOT_TAKEN)?``.
+
+        Anything more complex than these two shapes (boolean ``or`` /
+        ``and``, attribute access, calls) is ignored — those rarely
+        guard imports / main entry points and add disproportionate
+        walker complexity. On a match we slice out the if-body
+        instructions, run a fresh ``_Context`` over them, and emit a
+        single ``ir.If`` node so the structure survives with correct
+        indentation instead of being flattened to top level.
         """
         if self.pos >= len(self.ins):
             return False
@@ -929,6 +1143,23 @@ class _Context:
             return False
         test_name = str(ins.argval)
         cur = self.pos + 1
+        test_expr = test_name
+        # Shape 2: ``LOAD_NAME X ; LOAD_CONST 'literal' ; COMPARE_OP ==``.
+        if (
+            cur + 1 < len(self.ins)
+            and self.ins[cur].opname == "LOAD_CONST"
+            and self.ins[cur + 1].opname == "COMPARE_OP"
+            and isinstance(self.ins[cur].argval, (str, int, float, bool, bytes))
+        ):
+            # CPython 3.12+ packs the comparison operator into the argval
+            # text ("bool(==)" / "bool(!=)"); 3.11 reports the op name
+            # directly. Accept either by string-matching the rendered
+            # operator.
+            comp_arg = str(self.ins[cur + 1].argrepr)
+            if "==" in comp_arg or "!=" in comp_arg:
+                op_symbol = "==" if "==" in comp_arg else "!="
+                test_expr = f"{test_name} {op_symbol} {self.ins[cur].argval!r}"
+                cur += 2
         # Optional TO_BOOL on 3.12+.
         if cur < len(self.ins) and self.ins[cur].opname == "TO_BOOL":
             cur += 1
@@ -965,7 +1196,7 @@ class _Context:
         if self.pos < len(self.ins) and self.ins[self.pos].opname == "NOP":
             self._consume(1)
             self.pos += 1
-        self.body.append(ir.If(test=test_name, body=body_stmts, orelse=[]))
+        self.body.append(ir.If(test=test_expr, body=body_stmts, orelse=[]))
         return True
 
     def _try_except_block(self) -> bool:

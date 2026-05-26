@@ -56,6 +56,16 @@ class Mode(str, Enum):
     HYBRID = "hybrid"
     RULES_ONLY = "rules-only"
     LLM_ONLY = "llm-only"
+    # ``HYBRID_REWRITE`` — runs the rule pass for declaration scaffolding,
+    # then asks the LLM to rewrite the whole module given (disassembly +
+    # rule output) as context. The strongest mode for ``strict_match`` /
+    # ``FC`` because the LLM both fills function bodies *and* corrects
+    # module-level statements the rule walker mis-recovered (for-loop
+    # leaks, comprehensions, complex RHS, etc.). Costs one LLM call per
+    # module instead of one per body, which actually keeps wallclock
+    # comparable to per-body ``HYBRID`` on modules with many small
+    # functions.
+    HYBRID_REWRITE = "hybrid-rewrite"
 
 
 class Backend(str, Enum):
@@ -95,20 +105,18 @@ class DecompileReport:
 def _disassemble_native(pyc_file: Path) -> tuple[str, CodeType]:
     """Disassemble using the standard library (current interpreter only).
 
-    Uses :func:`contextlib.redirect_stdout` so that an exception inside
-    :func:`dis.dis` cannot leave the process's ``sys.stdout`` pointing
-    at a closed :class:`io.StringIO`. The previous direct-assignment
-    pattern was correct on the happy path but would mask the real
-    error with an attribute-error from the next ``print`` call.
+    Uses :func:`dis.dis`'s explicit ``file=`` parameter rather than
+    ``contextlib.redirect_stdout`` — the redirect approach mutates the
+    process-global ``sys.stdout`` and is not thread-safe, which caused
+    the disassembled text of one module to leak into the benchmark's
+    JSON output whenever two threads disassembled concurrently
+    (`--parallel >1`).
     """
-    import contextlib
-
     with open(pyc_file, "rb") as f:
         f.read(16)  # 16-byte .pyc header in 3.7+
         bytecode = marshal.load(f)
     string_output = io.StringIO()
-    with contextlib.redirect_stdout(string_output):
-        dis.dis(bytecode)
+    dis.dis(bytecode, file=string_output)
     return string_output.getvalue(), bytecode
 
 
@@ -266,6 +274,56 @@ _BODY_FILL_PROMPT = textwrap.dedent(
 )
 
 
+# Whole-module rewrite prompt used by :data:`Mode.HYBRID_REWRITE`. The
+# LLM gets both the disassembly (authoritative) and the rule pass'
+# partial recovery (declarations are reliable, bodies and module-level
+# control flow may be wrong) and is expected to emit a complete,
+# directly-compilable Python source file.
+_MODULE_REWRITE_PROMPT = textwrap.dedent(
+    """\
+    You are a Python decompiler. Reconstruct the original Python
+    {version_str} source for an entire module from its disassembled
+    bytecode.
+
+    You are given two inputs:
+
+    1. The complete disassembled bytecode (authoritative — your
+       output must compile back to behaviorally-equivalent bytecode).
+    2. A partial rule-based recovery (declarations are reliable, but
+       function bodies and some module-level statements may be
+       missing, stubbed as ``pass  # pychd: unrecovered body``, or
+       mis-recovered as ``X = ...``).
+
+    Bytecode disassembly:
+    ```
+    {disassembly}
+    ```
+
+    Partial recovery (use as a structural hint, but fix any mistakes
+    you can see from the bytecode):
+    ```
+    {rule_output}
+    ```
+
+    Requirements for your output:
+
+    - Output ONLY valid Python {version_str} source code. No
+      explanations, no markdown fences, no leading/trailing prose.
+    - Preserve every class / function / method / import / decorator /
+      argument name from the partial recovery exactly.
+    - Reconstruct function bodies from the disassembly. Use the rule
+      pass' signatures verbatim — do not invent new parameters,
+      defaults, or decorators.
+    - Fix module-level statements (assignments, for-loops,
+      comprehensions, ``if __name__ == "__main__":`` guards, etc.)
+      that the rule pass got wrong by reading the bytecode.
+    - Do NOT add any imports the bytecode does not justify.
+    - The output must pass ``ast.parse`` and ``py_compile.compile``
+      under Python {version_str}.
+    """
+)
+
+
 def _llm_fill_body(
     signature: str,
     disassembly: str,
@@ -357,13 +415,25 @@ def _codex_fill_body(prompt: str, model: ModelType | None) -> str:
         ]
         model_to_use = str(model) if model is not None else _CODEX_DEFAULT_MODEL
         cmd.extend(["-m", model_to_use])
-        cmd.append(prompt)
+        # Large modules' disassemblies blow past ARG_MAX (~128 KB on
+        # Linux) when passed as a command-line argument. Use the
+        # documented ``-`` placeholder which makes codex exec read the
+        # prompt from stdin instead. The body-fill prompts stay well
+        # under the limit but the whole-module rewrite prompts
+        # (HYBRID_REWRITE) routinely cross it.
+        cmd.append("-")
+        # Large stdlib modules (argparse, typing, _pydecimal) push the
+        # ``xhigh`` reasoning effort past 4 minutes per module. 15 min
+        # accommodates them without sacrificing the failure signal for
+        # genuinely stuck calls. The wall-clock impact is bounded by
+        # the harness' thread-pool size, not this per-call cap.
         proc = subprocess.run(
             cmd,
+            input=prompt,
             capture_output=True,
             text=True,
             check=False,
-            timeout=240,
+            timeout=900,
         )
         if proc.returncode != 0:
             raise RuntimeError(
@@ -530,6 +600,61 @@ def _fill_stmt_with_llm(
     return 0
 
 
+def _llm_rewrite_module(
+    disassembly: str,
+    rule_output: str,
+    version_tuple: tuple,
+    model: ModelType | None,
+    backend: Backend = Backend.LITELLM,
+) -> str:
+    """Send (disassembly + rule output) to the LLM and get back a full
+    recovered Python module source.
+
+    Used by :data:`Mode.HYBRID_REWRITE`. The prompt instructs the LLM
+    to preserve every identifier from the rule output verbatim while
+    using the disassembly to fix bodies and any mis-recovered
+    module-level statements. One call per module — much cheaper than
+    per-body filling for modules with many small functions, and the
+    LLM can also fix module-level shape (for-loop leaks, comprehensions,
+    complex literal RHS) that per-body filling cannot reach.
+    """
+    version_str = f"{version_tuple[0]}.{version_tuple[1]}"
+    prompt = _MODULE_REWRITE_PROMPT.format(
+        version_str=version_str,
+        disassembly=disassembly,
+        rule_output=rule_output,
+    )
+    if backend == Backend.CODEX:
+        text = _codex_fill_body(prompt, model)
+    else:
+        if model is None:
+            raise ValueError("llm rewrite requires a model when using litellm backend")
+        response = completion(  # pyrefly: ignore[not-callable]
+            model=model,
+            temperature=0.1,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.choices[0].message.content
+    return _clean_module_rewrite(text)
+
+
+def _clean_module_rewrite(text: str) -> str:
+    """Strip surrounding fences / stray prose from an LLM whole-module
+    rewrite. Keeps body indentation intact (unlike the per-body cleaner,
+    which dedents to four spaces)."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        # Drop opening fence (``` or ```python).
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        # Drop closing fence if present.
+        while lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines)
+    return text.rstrip() + "\n"
+
+
 def decompile_pyc(
     pyc_file: Path,
     *,
@@ -601,6 +726,75 @@ def decompile_pyc(
         if model is None and backend != Backend.CODEX:
             raise ValueError("hybrid mode requires a model when unknown blocks remain")
         llm_calls = _fill_module_with_llm(module, version_tuple, model, backend)
+
+    if mode == Mode.HYBRID_REWRITE:
+        if model is None and backend != Backend.CODEX:
+            raise ValueError("hybrid-rewrite mode requires a model with the litellm backend")
+        rule_source = module.render()
+        # If the rule pass already left no unknown bodies *and* the rule
+        # output parses cleanly, skip the LLM call. Saves both wall-clock
+        # and codex tokens for shapes the rule pass nailed (re-export
+        # modules, trivial-body modules).
+        skip_llm = False
+        if not unknowns:
+            import ast as _ast
+
+            try:
+                _ast.parse(rule_source)
+                skip_llm = True
+            except SyntaxError:
+                pass
+        if skip_llm:
+            return DecompileReport(
+                source=rule_source,
+                mode=mode,
+                rule_confidence=confidence,
+                unknown_blocks=0,
+                llm_calls=0,
+                version_tuple=version_tuple,
+            )
+        try:
+            rewritten = _llm_rewrite_module(
+                disassembled_pyc, rule_source, version_tuple, model, backend
+            )
+        except Exception as e:  # noqa: BLE001
+            # Any LLM failure (timeout, transport, bad output) falls back
+            # to the rule-only source. The caller cares about source
+            # quality, not why the rewrite failed — but we log so the
+            # benchmark row can show the degradation.
+            logging.warning(
+                "LLM rewrite of %s failed (%s); falling back to rule-only output.",
+                pyc_file,
+                str(e)[:120],
+            )
+            return DecompileReport(
+                source=rule_source,
+                mode=mode,
+                rule_confidence=confidence,
+                unknown_blocks=len(unknowns),
+                llm_calls=0,
+                version_tuple=version_tuple,
+            )
+        import ast as _ast
+
+        try:
+            _ast.parse(rewritten)
+            source = rewritten
+            llm_calls += 1
+        except SyntaxError:
+            logging.warning(
+                "LLM rewrite of %s did not parse; falling back to rule-only output.",
+                pyc_file,
+            )
+            source = rule_source
+        return DecompileReport(
+            source=source,
+            mode=mode,
+            rule_confidence=confidence,
+            unknown_blocks=len(unknowns),
+            llm_calls=llm_calls,
+            version_tuple=version_tuple,
+        )
 
     return DecompileReport(
         source=module.render(),

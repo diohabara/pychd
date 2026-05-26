@@ -75,7 +75,7 @@ warnings.simplefilter("ignore", SyntaxWarning)
 # Make the local pychd importable when run via `python tools/benchmark.py`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pychd.decompile import Mode, decompile_pyc  # noqa: E402
+from pychd.decompile import Backend, Mode, decompile_pyc  # noqa: E402
 from pychd.semantic import compare_all  # noqa: E402
 
 
@@ -387,7 +387,14 @@ def _load_tests_sidecar(py_file: Path) -> dict[str, str] | None:
     return _TESTS_SIDECAR_CACHE[parent].get(py_file.name)
 
 
-def measure_module(py_file: Path, *, semantic: bool = True) -> ModuleMetrics | None:
+def measure_module(
+    py_file: Path,
+    *,
+    semantic: bool = True,
+    mode: Mode = Mode.RULES_ONLY,
+    backend: Backend = Backend.LITELLM,
+    model: str | None = None,
+) -> ModuleMetrics | None:
     """Measure recovery quality for one .py file. Returns None if
     the file can't be compiled at all (e.g. Python 2 syntax).
 
@@ -398,6 +405,14 @@ def measure_module(py_file: Path, *, semantic: bool = True) -> ModuleMetrics | N
     ``_tests.json`` sidecar is present next to *py_file*).
     Disabling it skips all of that — useful when running on a large
     corpus where the per-module overhead matters.
+
+    *mode* / *backend* / *model* select the decompile strategy. The
+    default is :data:`Mode.RULES_ONLY` (no LLM, deterministic,
+    millisecond per module — what the original benchmark measured).
+    Pass :data:`Mode.HYBRID` to fill function bodies via the LLM or
+    :data:`Mode.HYBRID_REWRITE` to also let the LLM correct
+    module-level recovery. Both modes work with the codex backend
+    (uses the user's ``codex login`` instead of a litellm API key).
     """
     try:
         src = py_file.read_text()
@@ -459,7 +474,7 @@ def measure_module(py_file: Path, *, semantic: bool = True) -> ModuleMetrics | N
 
         t0 = time.perf_counter()
         try:
-            report = decompile_pyc(pyc, mode=Mode.RULES_ONLY)
+            report = decompile_pyc(pyc, mode=mode, backend=backend, model=model)
         except Exception as e:
             return ModuleMetrics(
                 name=py_file.name,
@@ -786,6 +801,42 @@ def main(argv: list[str] | None = None) -> int:
             " corpora where the ~150 ms / module overhead matters."
         ),
     )
+    parser.add_argument(
+        "--mode",
+        choices=[m.value for m in Mode],
+        default=Mode.RULES_ONLY.value,
+        help=(
+            "Decompile mode. ``rules-only`` (default) is the deterministic"
+            " pass. ``hybrid`` fills function bodies via LLM. ``hybrid-rewrite``"
+            " also asks the LLM to fix module-level recovery (one LLM call"
+            " per module, strongest mode for strict_match / FC)."
+        ),
+    )
+    parser.add_argument(
+        "--backend",
+        choices=[b.value for b in Backend],
+        default=Backend.LITELLM.value,
+        help=(
+            "LLM backend when --mode != rules-only. ``codex`` uses the"
+            " user's ``codex login`` (no API key needed); ``litellm`` reads"
+            " standard provider env vars."
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Model name for the litellm backend. Ignored for codex.",
+    )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help=(
+            "Process this many modules in parallel. Only useful with LLM"
+            " modes — the rule pass alone is fast enough that the"
+            " thread-pool overhead dominates."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.path.exists():
@@ -797,11 +848,51 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no .py files under {args.path}", file=sys.stderr)
         return 2
 
+    mode = Mode(args.mode)
+    backend = Backend(args.backend)
     rows: list[ModuleMetrics] = []
-    for f in files:
-        m = measure_module(f, semantic=not args.no_semantic)
-        if m is not None:
-            rows.append(m)
+    if args.parallel <= 1:
+        for f in files:
+            m = measure_module(
+                f,
+                semantic=not args.no_semantic,
+                mode=mode,
+                backend=backend,
+                model=args.model,
+            )
+            if m is not None:
+                rows.append(m)
+    else:
+        # ``measure_module`` spends the bulk of its wall-clock waiting
+        # on subprocess RPCs (codex exec, py_compile in a subprocess)
+        # so a thread pool is appropriate even though we're inside one
+        # Python process — the GIL is released around the RPC waits.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=args.parallel) as pool:
+            futures = {
+                pool.submit(
+                    measure_module,
+                    f,
+                    semantic=not args.no_semantic,
+                    mode=mode,
+                    backend=backend,
+                    model=args.model,
+                ): f
+                for f in files
+            }
+            for fut in as_completed(futures):
+                f = futures[fut]
+                try:
+                    m = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    print(f"# error on {f.name}: {e}", file=sys.stderr)
+                    continue
+                if m is not None:
+                    rows.append(m)
+        # Preserve the original file order so output diffs are stable.
+        order = {f.name: i for i, f in enumerate(files)}
+        rows.sort(key=lambda r: order.get(r.name, 0))
 
     if args.format == "json":
         print(json.dumps(_to_dicts(rows), indent=2))

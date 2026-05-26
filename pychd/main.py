@@ -40,6 +40,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Bypass the rule engine and send the full disassembly to the LLM.",
     )
+    mode_group.add_argument(
+        "--hybrid-rewrite",
+        action="store_true",
+        help=(
+            "Run rules first, then ask the LLM to rewrite the whole module "
+            "given (disassembly + rule output). Strongest mode for "
+            "strict_match / FC."
+        ),
+    )
     parser_decompile.add_argument(
         "-m",
         "--model",
@@ -109,6 +118,8 @@ def _mode_from_args(args: argparse.Namespace) -> Mode:
         return Mode.RULES_ONLY
     if args.llm_only:
         return Mode.LLM_ONLY
+    if getattr(args, "hybrid_rewrite", False):
+        return Mode.HYBRID_REWRITE
     return Mode.HYBRID
 
 

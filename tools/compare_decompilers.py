@@ -361,66 +361,99 @@ def _run_pychd(
     hybrid: bool = False,
     backend_name: str = "codex",
     model: str | None = None,
+    rewrite: bool = False,
+    parallel: int = 1,
 ) -> ToolResult:
-    """Run pychd against *corpus* in either rules-only or hybrid mode.
+    """Run pychd against *corpus* in rules-only, hybrid, or hybrid-rewrite mode.
 
-    *hybrid=True* fills every ``UnknownBlock`` via an LLM (default
-    backend: codex CLI). That's the apples-to-apples comparison
-    against tools that always attempt full body recovery
-    (decompyle3, pylingual). *hybrid=False* keeps the deterministic
-    rules-only baseline historically reported here.
+    *hybrid=True* (without *rewrite*) fills every ``UnknownBlock`` via
+    the LLM — one call per body. *rewrite=True* upgrades that to
+    ``HYBRID_REWRITE`` mode: rule pass first, then the LLM rewrites the
+    whole module given (disassembly + rule output). The rewrite mode is
+    the apples-to-apples comparison against PyLingual (also LLM-based)
+    and gives the strongest ``strict_match`` / ``FC`` numbers.
+
+    *parallel* controls the worker-thread count when running with the
+    LLM; the codex CLI is RPC-bound, so a thread pool genuinely
+    parallelises the wait.
     """
     from pychd.decompile import Backend, Mode, decompile_pyc
 
-    mode = Mode.HYBRID if hybrid else Mode.RULES_ONLY
-    backend = Backend(backend_name) if hybrid else Backend.LITELLM
+    if rewrite:
+        mode = Mode.HYBRID_REWRITE
+    elif hybrid:
+        mode = Mode.HYBRID
+    else:
+        mode = Mode.RULES_ONLY
+    backend = Backend(backend_name) if mode != Mode.RULES_ONLY else Backend.LITELLM
 
     res = ToolResult(per_module=[])
-    for name, src, pyc in corpus:
-        res.modules += 1
+
+    def _one(item: tuple[str, Path, Path]) -> dict | None:
+        name, src, pyc = item
         original = src.read_text()
         try:
             report = decompile_pyc(pyc, mode=mode, backend=backend, model=model)
             recovered = report.source
         except Exception as e:
-            res.skipped += 1
-            res.per_module.append({"name": name, "ok": False, "error": str(e)})
-            continue
+            return {"name": name, "ok": False, "error": str(e), "_skipped": True}
         parses, sig, decl, strict = _score(original, recovered)
         bx, bn, bs, esim, fc = _score_semantic(pyc, src, recovered, py_interp)
-        if parses:
+        return {
+            "name": name,
+            "ok": parses,
+            "sig": sig,
+            "decl": decl,
+            "strict": strict,
+            "bx": bx,
+            "bn": bn,
+            "bs": bs,
+            "edit_similarity": esim,
+            "functional_correctness": fc,
+        }
+
+    results: list[dict | None] = [None] * len(corpus)
+    if mode == Mode.RULES_ONLY or parallel <= 1:
+        for i, item in enumerate(corpus):
+            results[i] = _one(item)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            futures = {pool.submit(_one, item): i for i, item in enumerate(corpus)}
+            for fut in as_completed(futures):
+                results[futures[fut]] = fut.result()
+
+    for r in results:
+        if r is None:
+            continue
+        res.modules += 1
+        if r.get("_skipped"):
+            res.skipped += 1
+            r.pop("_skipped", None)
+            res.per_module.append(r)
+            continue
+        if r["ok"]:
             res.parses += 1
-        if sig:
+        if r["sig"]:
             res.signature_match += 1
-        if decl:
+        if r["decl"]:
             res.declaration_match += 1
-        if strict:
+        if r["strict"]:
             res.strict_match += 1
-        if bx:
+        if r["bx"]:
             res.bytecode_exact += 1
-        if bn:
+        if r["bn"]:
             res.bytecode_normalized += 1
-        if bs:
+        if r["bs"]:
             res.behavioral_smoke += 1
-        res.edit_similarity_sum += esim
+        res.edit_similarity_sum += r["edit_similarity"]
+        fc = r["functional_correctness"]
         if fc is not None:
             res.functional_total += 1
             if fc:
                 res.functional_correctness += 1
-        res.per_module.append(
-            {
-                "name": name,
-                "ok": parses,
-                "sig": sig,
-                "decl": decl,
-                "strict": strict,
-                "bx": bx,
-                "bn": bn,
-                "bs": bs,
-                "edit_similarity": esim,
-                "functional_correctness": fc,
-            }
-        )
+        res.per_module.append(r)
     return res
 
 
@@ -869,8 +902,10 @@ def _run_one_version(
     *,
     quick: bool,
     pychd_hybrid: bool = False,
+    pychd_rewrite: bool = False,
     pychd_backend: str = "codex",
     pychd_model: str | None = None,
+    pychd_parallel: int = 1,
 ) -> dict[str, dict]:
     """Compile the corpus under *py_interp* and score every available tool.
 
@@ -888,21 +923,55 @@ def _run_one_version(
             file=sys.stderr,
         )
         out: dict[str, dict] = {}
-        pychd_label = (
-            f"pychd (hybrid:{pychd_backend})" if pychd_hybrid else "pychd (rules-only)"
-        )
+        if pychd_rewrite:
+            pychd_label = f"pychd (hybrid-rewrite:{pychd_backend})"
+        elif pychd_hybrid:
+            pychd_label = f"pychd (hybrid:{pychd_backend})"
+        else:
+            pychd_label = "pychd (rules-only)"
         out[pychd_label] = asdict(
             _run_pychd(
                 corpus,
                 py_interp=py_interp,
-                hybrid=pychd_hybrid,
+                hybrid=pychd_hybrid or pychd_rewrite,
+                rewrite=pychd_rewrite,
                 backend_name=pychd_backend,
                 model=pychd_model,
+                parallel=pychd_parallel,
             )
         )
         out[pychd_label]["version"] = "main (this repo)"
         out[pychd_label]["coverage_label"] = "every CPython 3.x"
+        current_tuple = tuple(map(int, version.split(".")))
         for spec in EXTERNAL_TOOLS:
+            preferred = TOOL_PREFERRED_VERSIONS.get(spec.name)
+            preferred_tuple = (
+                tuple(map(int, preferred.split("."))) if preferred else None
+            )
+            # Only invoke each external tool on its preferred Python
+            # version. Running every tool on every version (then masking
+            # the non-preferred results) wasted ~20 min/run on pylingual
+            # containers that we'd discard anyway.
+            if preferred_tuple is not None and current_tuple != preferred_tuple:
+                out[spec.name] = {
+                    "modules": 0,
+                    "parses": 0,
+                    "signature_match": 0,
+                    "declaration_match": 0,
+                    "strict_match": 0,
+                    "bytecode_exact": 0,
+                    "bytecode_normalized": 0,
+                    "behavioral_smoke": 0,
+                    "functional_correctness": 0,
+                    "functional_total": 0,
+                    "edit_similarity_sum": 0.0,
+                    "skipped": 0,
+                    "error": f"out of scope (preferred: Py {preferred})",
+                    "version": "(skipped — see preferred-version row)",
+                    "coverage_label": spec.coverage_label,
+                    "per_module": None,
+                }
+                continue
             binary, status = _resolve_spec(spec)
             if binary is None:
                 out[spec.name] = {
@@ -991,6 +1060,26 @@ def main(argv: list[str] | None = None) -> int:
             " available through the Codex CLI's ChatGPT account)."
         ),
     )
+    ap.add_argument(
+        "--pychd-rewrite",
+        action="store_true",
+        help=(
+            "Run pychd in hybrid-rewrite mode — one LLM call per module"
+            " that both fills bodies *and* corrects module-level"
+            " recovery. Strongest mode for strict_match and FC, and the"
+            " apples-to-apples comparison against PyLingual."
+        ),
+    )
+    ap.add_argument(
+        "--pychd-parallel",
+        type=int,
+        default=8,
+        help=(
+            "Number of concurrent codex calls when pychd runs in hybrid"
+            " or hybrid-rewrite mode. The codex CLI is RPC-bound so this"
+            " genuinely parallelises the wait."
+        ),
+    )
     args = ap.parse_args(argv)
 
     # Resolve the list of Python versions to benchmark against.
@@ -1043,14 +1132,16 @@ def main(argv: list[str] | None = None) -> int:
             py,
             quick=args.quick,
             pychd_hybrid=args.pychd_hybrid,
+            pychd_rewrite=args.pychd_rewrite,
             pychd_backend=args.pychd_backend,
             pychd_model=args.pychd_model,
+            pychd_parallel=args.pychd_parallel,
         )
         # Mask out tools that aren't designed for this Python version
         # so the matrix isn't littered with timeouts from unfair runs
         # — except always keep pychd, which covers every release.
         for tool in list(per_version[v]):
-            if tool == "pychd (rules-only)":
+            if tool.startswith("pychd"):
                 continue
             preferred = TOOL_PREFERRED_VERSIONS.get(tool)
             if preferred is None:

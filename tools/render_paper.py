@@ -56,6 +56,7 @@ sys.path.insert(0, str(REPO_ROOT))
 # ``\*``, ``\o``…) that Python 3.12+ flags via SyntaxWarning.
 warnings.simplefilter("ignore", SyntaxWarning)
 
+from pychd.decompile import Backend, Mode  # noqa: E402
 from tools.benchmark import ModuleMetrics, measure_module  # noqa: E402
 
 CORPORA = [
@@ -78,16 +79,65 @@ def _ensure_corpora(root: Path) -> None:
     )
 
 
-def _gather_corpus(root: Path, name: str) -> list[ModuleMetrics]:
+def _gather_corpus(
+    root: Path,
+    name: str,
+    *,
+    mode: Mode = Mode.RULES_ONLY,
+    backend: Backend = Backend.LITELLM,
+    model: str | None = None,
+    parallel: int = 1,
+    cache_dir: Path | None = None,
+) -> list[ModuleMetrics]:
+    """Run :func:`measure_module` across every ``.py`` in ``root/name``.
+
+    When *cache_dir* is set and a file ``{cache_dir}/{name}-{mode}.json``
+    exists, its precomputed rows are loaded instead of re-running the
+    pipeline — useful for the hybrid-rewrite path where measurement is
+    expensive (one LLM call per module).
+    """
+    if cache_dir is not None:
+        cache_file = cache_dir / f"{name}-{mode.value}.json"
+        if cache_file.is_file():
+            try:
+                payload = json.loads(cache_file.read_text())
+            except (OSError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, list):
+                from dataclasses import fields as _dc_fields
+
+                allowed = {f.name for f in _dc_fields(ModuleMetrics)}
+                return [
+                    ModuleMetrics(**{k: v for k, v in row.items() if k in allowed})
+                    for row in payload
+                ]
     base = root / name
     top_only = name in {"stdlib", "stdlib-full", "humaneval", "cursor-sdk"}
     files = sorted(base.glob("*.py")) if top_only else sorted(base.rglob("*.py"))
     files = [f for f in files if "_vendor" not in f.parts]
     rows: list[ModuleMetrics] = []
-    for f in files:
-        m = measure_module(f)
-        if m is not None:
-            rows.append(m)
+    if parallel <= 1 or mode == Mode.RULES_ONLY:
+        for f in files:
+            m = measure_module(f, mode=mode, backend=backend, model=model)
+            if m is not None:
+                rows.append(m)
+        return rows
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = {
+            pool.submit(measure_module, f, mode=mode, backend=backend, model=model): f
+            for f in files
+        }
+        for fut in as_completed(futures):
+            try:
+                m = fut.result()
+            except Exception:  # noqa: BLE001
+                continue
+            if m is not None:
+                rows.append(m)
+    order = {f.name: i for i, f in enumerate(files)}
+    rows.sort(key=lambda r: order.get(r.name, 0))
     return rows
 
 
@@ -143,10 +193,26 @@ def _format_edit(value: float) -> str:
     return f"{value:.3f}"
 
 
-def render(root: Path) -> tuple[str, dict[str, Any]]:
+def render(
+    root: Path,
+    *,
+    mode: Mode = Mode.RULES_ONLY,
+    backend: Backend = Backend.LITELLM,
+    model: str | None = None,
+    parallel: int = 1,
+    cache_dir: Path | None = None,
+) -> tuple[str, dict[str, Any]]:
     all_rows: dict[str, list[ModuleMetrics]] = {}
     for name, _label in CORPORA:
-        all_rows[name] = _gather_corpus(root, name)
+        all_rows[name] = _gather_corpus(
+            root,
+            name,
+            mode=mode,
+            backend=backend,
+            model=model,
+            parallel=parallel,
+            cache_dir=cache_dir,
+        )
 
     # Per-corpus table — eight metric columns total:
     #
@@ -255,6 +321,7 @@ def render(root: Path) -> tuple[str, dict[str, Any]]:
         fail_lines.append("| _(none)_ | 0 | every recoverable module recovered |")
 
     # Compose
+    headline_label = "hybrid-rewrite" if mode == Mode.HYBRID_REWRITE else "rule-only"
     body = "\n".join(
         [
             "<!-- BEGIN: paper-generated -->",
@@ -263,7 +330,7 @@ def render(root: Path) -> tuple[str, dict[str, Any]]:
             " _committed alongside the code. Re-generate via `just paper`_"
             " _whenever rules.py or any corpus changes._",
             "",
-            "**Headline:** rule-only recovery on **"
+            f"**Headline:** {headline_label} recovery on **"
             f"{grand_n} modules / {grand_loc:,} LoC**:",
             "",
             f"- **Signature match: {_format_pct(grand_sig, grand_n)}**"
@@ -552,10 +619,57 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the comparative-benchmark step (uncompyle6 / decompyle3).",
     )
+    ap.add_argument(
+        "--mode",
+        choices=[m.value for m in Mode],
+        default=Mode.RULES_ONLY.value,
+        help=(
+            "Decompile mode for the headline numbers. ``rules-only`` is the"
+            " deterministic baseline; ``hybrid-rewrite`` is the highest-"
+            "fidelity LLM-augmented mode (best for strict_match / FC)."
+        ),
+    )
+    ap.add_argument(
+        "--backend",
+        choices=[b.value for b in Backend],
+        default=Backend.LITELLM.value,
+        help="LLM backend (codex / litellm) when --mode is not rules-only.",
+    )
+    ap.add_argument(
+        "--model",
+        default=None,
+        help="Model name passed to the litellm backend. Ignored for codex.",
+    )
+    ap.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help="Process this many modules in parallel during the headline render.",
+    )
+    ap.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory containing precomputed per-corpus JSON files named"
+            " ``<corpus>-<mode>.json``. When set, the renderer loads cached"
+            " rows instead of re-running the (potentially expensive)"
+            " hybrid-rewrite pipeline. Use this together with"
+            " ``tools/benchmark.py --format json`` to keep paper renders"
+            " cheap during iteration."
+        ),
+    )
     args = ap.parse_args(argv)
 
     _ensure_corpora(args.corpora_root)
-    block, raw = render(args.corpora_root)
+    block, raw = render(
+        args.corpora_root,
+        mode=Mode(args.mode),
+        backend=Backend(args.backend),
+        model=args.model,
+        parallel=args.parallel,
+        cache_dir=args.cache_dir,
+    )
 
     if args.dry_run:
         print(block)
