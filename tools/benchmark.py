@@ -188,6 +188,55 @@ def _count_functions(tree: ast.AST) -> int:
     )
 
 
+def _normalise_imports(tree: ast.AST) -> ast.AST:
+    """Split multi-name ``import a, b`` / ``from x import a, b`` into
+    individual single-name statements at every scope.
+
+    Bytecode preserves *which names* an import line brings in but loses
+    the syntactic grouping — ``import sys, os`` and ``import sys`` +
+    ``import os`` compile to the same opcode sequence. Comparing them
+    structurally with ``ast.dump`` therefore needs both sides reduced
+    to a canonical one-name-per-line form.
+    """
+
+    def visit(body: list[ast.stmt]) -> list[ast.stmt]:
+        new_body: list[ast.stmt] = []
+        for node in body:
+            # Recurse into compound statements first so nested imports
+            # also get split.
+            for attr in ("body", "orelse", "finalbody"):
+                if hasattr(node, attr):
+                    setattr(node, attr, visit(getattr(node, attr)))
+            if isinstance(node, ast.Try):
+                node.handlers = [
+                    ast.ExceptHandler(
+                        type=h.type, name=h.name, body=visit(h.body)
+                    )
+                    for h in node.handlers
+                ]
+            if isinstance(node, ast.With):
+                # ``with`` body already handled via .body above.
+                pass
+            if isinstance(node, ast.Import) and len(node.names) > 1:
+                for alias in node.names:
+                    new_body.append(ast.Import(names=[alias]))
+                continue
+            if isinstance(node, ast.ImportFrom) and len(node.names) > 1:
+                for alias in node.names:
+                    new_body.append(
+                        ast.ImportFrom(
+                            module=node.module, names=[alias], level=node.level
+                        )
+                    )
+                continue
+            new_body.append(node)
+        return new_body
+
+    if isinstance(tree, ast.Module):
+        tree.body = visit(tree.body)
+    return tree
+
+
 def _strip_for_skeleton(tree: ast.AST) -> ast.AST:
     """Reduce *tree* to a normalised skeleton.
 
@@ -197,9 +246,16 @@ def _strip_for_skeleton(tree: ast.AST) -> ast.AST:
     doesn't always reattach them in the same order). Module-level
     docstrings, string literal quote styles, and numeric literal forms
     are normalised away too — those are CPython-compiler-induced
-    cosmetic differences, not real recovery regressions. After this,
-    an ``ast.dump`` equality check is meaningful for skeleton
-    comparison.
+    cosmetic differences, not real recovery regressions.
+
+    Multi-name imports (``import sys, os``) are split into single-name
+    forms (``import sys`` ; ``import os``) on both sides before
+    comparing, since the rule pass renders one ``IMPORT_NAME`` opcode
+    per emitted ``import`` line and there's no way to distinguish the
+    two source shapes from bytecode.
+
+    After this, an ``ast.dump`` equality check is meaningful for
+    skeleton comparison.
     """
     cloned = ast.parse(ast.unparse(tree))
     # Drop module-level docstring (CPython's ``inspect.cleandoc``
@@ -213,6 +269,12 @@ def _strip_for_skeleton(tree: ast.AST) -> ast.AST:
         and isinstance(cloned.body[0].value.value, str)
     ):
         cloned.body = cloned.body[1:]
+    # Normalise multi-name ``import a, b`` and ``from x import a, b``
+    # into separate single-name statements at every scope. The rule
+    # pass and the LLM both emit one-per-line imports while the
+    # original source may use comma-list shorthand; the comma form
+    # carries no extra information that survives compilation.
+    cloned = _normalise_imports(cloned)
     for node in ast.walk(cloned):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             node.body = [ast.Pass()]
