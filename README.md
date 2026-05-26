@@ -36,7 +36,7 @@ See [§Contamination resistance](#contamination-resistance) for the
 methodology and [§Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)
 for the broader 23-module stdlib + PyPI head-to-head.
 
-![pychd vs uncompyle6 / decompyle3 / pycdc / PyLingual on the 23-module stdlib + PyPI corpus](assets/comparison_decompilers.svg)
+![Per-tool comparison at each decompiler's preferred Python version](assets/comparison_decompilers.svg)
 
 > **A note on LLM contamination.** A meaningful share of the headline
 > corpus (stdlib, popular PyPI packages, HumanEval) was almost
@@ -680,7 +680,7 @@ collapsed to `X = {}`, a for-loop side effect that wasn't preserved)
 unchanged. `--hybrid-rewrite` adds a final whole-module rewrite
 call:
 
-```
+````
 You are a Python decompiler. Reconstruct the original Python 3.14
 source for an entire module from its disassembled bytecode.
 
@@ -703,7 +703,7 @@ Output ONLY valid Python 3.14 source code. Preserve every
 class/function/import name from the partial recovery. Fix
 module-level statements the rule pass got wrong by reading the
 bytecode. The output must pass `ast.parse` and `py_compile`.
-```
+````
 
 One call per module — strictly more expensive than per-body
 filling, but the prompt amortises across every body in the module
@@ -1085,9 +1085,9 @@ reviewers can read the trade-off directly.
 
 Bars = signature match · declaration match · strict match per corpus.
 
-![Rule-pass coverage across CPython 3.x releases](assets/version_coverage.svg)
+![Rule-pass coverage across CPython 3.6 – 3.14](assets/version_coverage.svg)
 
-Every Python 3.x release routes through a rule pass: 3.14 hits the **native** walker for full-fidelity recovery, 3.0 – 3.13 hit the **cross-version** walker for declaration-level recovery via xdis.
+Bar height = number of distinct CPython magic-number revisions (micro-release bytecode bumps) covered per Python minor. Colour = which rule pass handles the minor: **green** = native walker (3.14 only, full-fidelity), **blue** = cross-version walker (3.6 – 3.13, declaration-level via xdis). The chart is limited to 3.6+ since 3.0 – 3.5 are EOL; pychd still recognises their magic numbers (see [Cross-version support](#cross-version-support) below), but no current build target compiles bytecode against them.
 
 #### Residual failure attribution
 
@@ -1196,7 +1196,9 @@ Run-time notes for reviewers reproducing the comparison:
   discard. Reviewers who want the full matrix can drop the skip-guard
   block in `_run_one_version`.
 
-![pychd vs uncompyle6 / decompyle3 / pycdc / PyLingual — 23 real-world modules](assets/comparison_decompilers.svg)
+![Per-tool comparison at each tool's preferred Python version — 23 real-world modules](assets/comparison_decompilers.svg)
+
+Each tool is plotted **at the Python version it was designed for** (uncompyle6 / decompyle3 → 3.8, pycdc → 3.10, pylingual → 3.13). pychd appears in all three groups so the cross-version coverage story is visible side-by-side with each competitor's best-case Python. This figure (and every SVG under `assets/`) is regenerated from `assets/_comparison.json` and `assets/_results.json` by `just paper` / `just bench-figures`, and a pre-commit hook re-stages them whenever the JSONs change.
 
 <!-- BEGIN: comparison-generated -->
 

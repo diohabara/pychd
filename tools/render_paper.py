@@ -287,13 +287,17 @@ def render(
         "",
         "Bars = signature match · declaration match · strict match per corpus.",
         "",
-        "![Rule-pass coverage across CPython 3.x releases]"
-        "(assets/version_coverage.svg)",
+        "![Rule-pass coverage across CPython 3.6 – 3.14](assets/version_coverage.svg)",
         "",
-        "Every Python 3.x release routes through a rule pass: 3.14 hits"
-        " the **native** walker for full-fidelity recovery, 3.0 – 3.13"
-        " hit the **cross-version** walker for declaration-level"
-        " recovery via xdis.",
+        "Bar height = number of distinct CPython magic-number revisions"
+        " (micro-release bytecode bumps) covered per Python minor."
+        " Colour = which rule pass handles the minor: **green** = native"
+        " walker (3.14 only, full-fidelity), **blue** = cross-version"
+        " walker (3.6 – 3.13, declaration-level via xdis). The chart is"
+        " limited to 3.6+ since 3.0 – 3.5 are EOL; pychd still"
+        " recognises their magic numbers (see"
+        " [Cross-version support](#cross-version-support) below), but"
+        " no current build target compiles bytecode against them.",
     ]
 
     # Failure attribution

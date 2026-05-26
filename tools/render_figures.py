@@ -66,10 +66,48 @@ COLOR_ED = "#8c564b"  # brown — edit_similarity
 PLOTLY_TEMPLATE = "plotly_white"
 
 
+def _normalize_svg(svg_text: str, name: str) -> str:
+    """Replace Plotly's per-render random IDs with deterministic ones.
+
+    Plotly's SVG output embeds a fresh 6-hex random suffix on every
+    ``<defs>`` / ``<clipPath>`` element (e.g. ``clip2d6634xyplot``).
+    That suffix changes on every render even when the data is
+    byte-identical, which keeps the pre-commit hook in a perpetual
+    "files were modified" loop. We rewrite the suffix to a stable
+    hash derived from the figure name so re-running the renderer is
+    a true no-op when nothing meaningful changed.
+    """
+    import hashlib
+    import re
+
+    pattern = re.compile(r"[0-9a-f]{6}")
+    digest = hashlib.sha1(name.encode()).hexdigest()[:6]
+    # Plotly's suffix sits between a known prefix ("defs-", "clip",
+    # "legend", "topdefs-") and either end-of-token or a known
+    # secondary suffix ("x", "y", "xy", "xyplot"). Replace only those
+    # occurrences so we don't clobber colour hex codes elsewhere.
+    out = svg_text
+    for prefix in ("defs-", "clip", "legend", "topdefs-"):
+        out = re.sub(
+            re.escape(prefix) + pattern.pattern,
+            prefix + digest,
+            out,
+        )
+    # Trailing newline so end-of-file-fixer doesn't keep "fixing" it.
+    if not out.endswith("\n"):
+        out += "\n"
+    return out
+
+
 def _write(fig: go.Figure, name: str, *, png: bool = False) -> Path:
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     svg_path = ASSET_DIR / f"{name}.svg"
     fig.write_image(str(svg_path), format="svg", width=900, height=520, scale=1)
+    # Normalise non-deterministic plotly IDs so re-renders are no-ops
+    # when the chart data hasn't changed (the pre-commit hook depends
+    # on this to avoid an infinite "files modified" loop).
+    normalised = _normalize_svg(svg_path.read_text(), name)
+    svg_path.write_text(normalised)
     if png:
         png_path = ASSET_DIR / f"{name}.png"
         fig.write_image(str(png_path), format="png", width=1800, height=1040, scale=2)
@@ -256,147 +294,174 @@ def render_paper_axes_by_corpus(
 
 
 def render_version_coverage(*, png: bool = False) -> Path:
-    """Stacked bar showing rule-pass coverage per Python minor release."""
+    """Bar chart of magic-number revisions covered per Python minor release.
+
+    Bar height = number of distinct CPython magic numbers (micro-release
+    bytecode revisions) routed to a rule pass for that minor. Bar colour
+    encodes which rule pass handles the minor (native / cross-version).
+    The chart is limited to 3.6+ — the realistic deployment range for
+    modern Python — since CPython 3.0-3.5 are EOL and including them
+    flattens the chart with versions nobody compiles bytecode against.
+    """
     from pychd.versions import KNOWN_VERSIONS, rule_pass_for
 
-    by_minor: dict[tuple[int, int], int] = {}
+    counts: dict[tuple[int, int], int] = {}
     for info in KNOWN_VERSIONS.values():
-        by_minor[info.version] = max(by_minor.get(info.version, 0), info.magic_number)
-    minors = sorted(by_minor)
+        counts[info.version] = counts.get(info.version, 0) + 1
+    minors = sorted(m for m in counts if m >= (3, 6))
     labels = [f"3.{m[1]}" for m in minors]
-    native = [1 if rule_pass_for(m) == "native" else 0 for m in minors]
-    cross = [1 if rule_pass_for(m) == "cross-version" else 0 for m in minors]
-    llm = [1 if rule_pass_for(m) == "llm-only" else 0 for m in minors]
+    passes = [rule_pass_for(m) for m in minors]
+    heights = [counts[m] for m in minors]
+    colors = {
+        "native": COLOR_DECLARATION,
+        "cross-version": COLOR_SIGNATURE,
+        "llm-only": COLOR_NEUTRAL,
+    }
+    bar_colors = [colors[p] for p in passes]
+    text_labels = [
+        f"{n} rev{'s' if n != 1 else ''}<br>{p}" for n, p in zip(heights, passes)
+    ]
 
     fig = go.Figure()
     fig.add_bar(
-        name="Native rule pass",
         x=labels,
-        y=native,
-        marker_color=COLOR_DECLARATION,
-        hovertemplate="<extra>native pass (full fidelity)</extra>",
+        y=heights,
+        marker_color=bar_colors,
+        text=text_labels,
+        textposition="outside",
+        hovertemplate=(
+            "Python %{x}<br>%{y} magic-number revision(s)<br>"
+            "rule pass: %{customdata}<extra></extra>"
+        ),
+        customdata=passes,
+        showlegend=False,
     )
-    fig.add_bar(
-        name="Cross-version rule pass",
-        x=labels,
-        y=cross,
-        marker_color=COLOR_SIGNATURE,
-        hovertemplate="<extra>cross-version pass (declarations)</extra>",
-    )
-    fig.add_bar(
-        name="LLM-only",
-        x=labels,
-        y=llm,
-        marker_color=COLOR_NEUTRAL,
-        hovertemplate="<extra>LLM-only</extra>",
-    )
+    # Legend proxies — empty traces just so the colour key shows up.
+    for label, key in [
+        ("Native rule pass (3.14)", "native"),
+        ("Cross-version rule pass (3.6 – 3.13)", "cross-version"),
+    ]:
+        fig.add_bar(
+            x=[None],
+            y=[None],
+            name=label,
+            marker_color=colors[key],
+            showlegend=True,
+        )
     fig.update_layout(
-        title="Rule-pass coverage across CPython 3.x releases",
+        title=(
+            "Rule-pass coverage across CPython 3.6 – 3.14"
+            " (bar = # of magic-number revisions per minor)"
+        ),
         template=PLOTLY_TEMPLATE,
-        barmode="stack",
-        yaxis=dict(title="Pass available", showticklabels=False, range=[0, 1.15]),
-        xaxis=dict(title="Python minor release"),
+        yaxis=dict(title="Magic-number revisions covered", rangemode="tozero"),
+        xaxis=dict(title="Python minor release", type="category"),
         legend=dict(orientation="h", y=-0.2),
-        margin=dict(l=40, r=20, t=80, b=80),
+        margin=dict(l=60, r=20, t=80, b=100),
+        bargap=0.25,
     )
     return _write(fig, "version_coverage", png=png)
 
 
 def render_comparative_benchmark(
-    comparison: dict[str, dict[str, Any]],
+    versioned: dict[str, dict[str, dict[str, Any]]],
     *,
     png: bool = False,
 ) -> Path:
-    """Bar chart comparing pychd to other Python decompilers on a shared corpus.
+    """Bar chart comparing pychd vs other decompilers at each tool's
+    *own* preferred Python version.
 
-    Renders all eight axes side-by-side: three static (declaration AST
-    shape), three semantic (bytecode + runtime), Pass@1, and edit
-    similarity. Tools that were skipped at run time (image not built /
-    binary missing) are omitted entirely — drawing them as a zero
-    column would imply they failed every axis, which isn't true.
+    Why not pin every tool to a single Python release: uncompyle6 /
+    decompyle3 cap out at 3.8, pycdc is best on 3.10, and pylingual
+    targets 3.13. Forcing them all onto 3.8 (the old chart) artificially
+    advantaged the legacy tools and excluded the modern ones outright.
+    We now plot every (tool, Python version) pair that actually
+    produced scoring rows in ``_comparison.json``, so each tool is
+    judged at its strongest version and pychd appears once per version
+    to make the cross-version coverage story visible.
     """
-    # Drop tools that produced no scoring rows (skipped due to missing
-    # binary / image). They appear in the run's JSON for bookkeeping
-    # but plotting them flat at 0 is misleading.
-    tools = [t for t in comparison if comparison[t].get("modules", 0) > 0]
-    if not tools:
-        # Nothing to compare; write an empty placeholder so the README
-        # still has a valid <img> target.
+
+    def version_key(v: str) -> tuple[int, int]:
+        return tuple(int(p) for p in v.split("."))  # type: ignore[return-value]
+
+    versions = sorted(versioned, key=version_key)
+
+    # Collect every (tool, version) pair that actually ran. Skipped
+    # tools (modules == 0, error mentions "out of scope" or
+    # "not installed") drop out — they appear elsewhere in the README's
+    # cross-version matrix as "— (not run)" / "not installed".
+    columns: list[tuple[str, str, dict[str, Any]]] = []
+    for v in versions:
+        for tool, data in versioned[v].items():
+            if data.get("modules", 0) > 0:
+                columns.append((tool, v, data))
+
+    if not columns:
         fig = go.Figure()
         fig.update_layout(title="No comparison data — run tools/compare_decompilers.py")
         return _write(fig, "comparison_decompilers", png=png)
 
-    def rate(t: str, key: str) -> float:
-        return 100 * comparison[t].get(key, 0) / max(1, comparison[t]["modules"])
+    labels = [f"{tool}<br>@ Py {v}" for tool, v, _ in columns]
+
+    def rate(data: dict[str, Any], key: str) -> float:
+        return 100 * data.get(key, 0) / max(1, data["modules"])
 
     fig = go.Figure()
     fig.add_bar(
         name="Output parses",
-        x=tools,
-        y=[rate(t, "parses") for t in tools],
+        x=labels,
+        y=[rate(d, "parses") for _, _, d in columns],
         marker_color="#bbbbbb",
         hovertemplate="%{y:.1f}%<extra>output parses</extra>",
     )
     fig.add_bar(
         name="Signature match",
-        x=tools,
-        y=[rate(t, "signature_match") for t in tools],
+        x=labels,
+        y=[rate(d, "signature_match") for _, _, d in columns],
         marker_color=COLOR_SIGNATURE,
         hovertemplate="%{y:.1f}%<extra>signature match</extra>",
     )
     fig.add_bar(
         name="Declaration match",
-        x=tools,
-        y=[rate(t, "declaration_match") for t in tools],
+        x=labels,
+        y=[rate(d, "declaration_match") for _, _, d in columns],
         marker_color=COLOR_DECLARATION,
         hovertemplate="%{y:.1f}%<extra>declaration match</extra>",
     )
     fig.add_bar(
+        name="Strict match",
+        x=labels,
+        y=[rate(d, "strict_match") for _, _, d in columns],
+        marker_color=COLOR_STRICT,
+        hovertemplate="%{y:.1f}%<extra>stripped-AST equality</extra>",
+    )
+    fig.add_bar(
         name="bytecode_exact",
-        x=tools,
-        y=[rate(t, "bytecode_exact") for t in tools],
+        x=labels,
+        y=[rate(d, "bytecode_exact") for _, _, d in columns],
         marker_color=COLOR_BX,
         hovertemplate="%{y:.1f}%<extra>marshal payload identical</extra>",
     )
     fig.add_bar(
         name="bytecode_normalized",
-        x=tools,
-        y=[rate(t, "bytecode_normalized") for t in tools],
+        x=labels,
+        y=[rate(d, "bytecode_normalized") for _, _, d in columns],
         marker_color=COLOR_BN,
         hovertemplate="%{y:.1f}%<extra>canonical instruction stream</extra>",
     )
     fig.add_bar(
         name="behavioral_smoke",
-        x=tools,
-        y=[rate(t, "behavioral_smoke") for t in tools],
+        x=labels,
+        y=[rate(d, "behavioral_smoke") for _, _, d in columns],
         marker_color=COLOR_BS,
         hovertemplate="%{y:.1f}%<extra>import + public surface</extra>",
     )
-
-    # Paper-aligned axes. FC may be n/a (no oracle) — show as 0 with
-    # reduced opacity; ED is always defined and rescaled to a percentage.
-    def fc_rate(t: str) -> tuple[float, float]:
-        total = comparison[t].get("functional_total", 0)
-        passes = comparison[t].get("functional_correctness", 0)
-        return (100 * passes / max(1, total), total)
-
-    fc_values = [fc_rate(t) for t in tools]
-    fig.add_bar(
-        name="Pass@1 (FC)",
-        x=tools,
-        y=[v[0] for v in fc_values],
-        marker_color=COLOR_FC,
-        marker_opacity=[1.0 if v[1] > 0 else 0.2 for v in fc_values],
-        hovertemplate=("%{y:.1f}%<extra>Pass@1 — n/a where no oracle</extra>"),
-    )
     fig.add_bar(
         name="Edit Similarity (×100)",
-        x=tools,
+        x=labels,
         y=[
-            100
-            * comparison[t].get("edit_similarity_sum", 0.0)
-            / max(1, comparison[t]["modules"])
-            for t in tools
+            100 * d.get("edit_similarity_sum", 0.0) / max(1, d["modules"])
+            for _, _, d in columns
         ],
         marker_color=COLOR_ED,
         hovertemplate="%{y:.1f}<extra>mean Ratcliff-Obershelp ratio × 100</extra>",
@@ -404,15 +469,15 @@ def render_comparative_benchmark(
 
     fig.update_layout(
         title=(
-            "pychd vs. uncompyle6 / decompyle3 on a shared Python 3.8 corpus"
-            " — eight-axis comparison"
+            "Per-tool comparison at each tool's preferred Python version"
+            " — eight-axis (no shared-version handicap)"
         ),
         template=PLOTLY_TEMPLATE,
         barmode="group",
         yaxis=dict(title="Rate (%)", range=[0, 105]),
-        xaxis=dict(title="Decompiler"),
-        legend=dict(orientation="h", y=-0.2),
-        margin=dict(l=60, r=20, t=80, b=100),
+        xaxis=dict(title="Decompiler @ Python version", tickangle=0),
+        legend=dict(orientation="h", y=-0.25),
+        margin=dict(l=60, r=20, t=80, b=140),
     )
     return _write(fig, "comparison_decompilers", png=png)
 
@@ -442,20 +507,17 @@ def main(argv: list[str] | None = None) -> int:
         written.append(render_paper_axes_by_corpus(raw["corpora"], png=args.png))
     if args.comparison_json.exists():
         cmp = json.loads(args.comparison_json.read_text())
-        # New versioned schema wraps per-version dicts under "versions";
-        # render the most-supported version (lowest minor present) as
-        # the canonical comparison chart so the README's single image
-        # still makes sense at a glance.
+        # The comparison figure now consumes the whole versioned dict
+        # and plots each tool at its own preferred Python version.
+        # Forcing all tools onto a shared release (the old 3.8-pinned
+        # chart) excluded the modern decompilers entirely; see
+        # render_comparative_benchmark() for the rationale.
         if isinstance(cmp, dict) and "versions" in cmp and cmp["versions"]:
-            versions = sorted(
-                cmp["versions"].keys(),
-                key=lambda s: tuple(map(int, s.split("."))),
-            )
-            # The lowest minor is also the broadest tool overlap —
-            # uncompyle6, decompyle3, and pycdc all read 3.8 .pyc but
-            # only pychd + pylingual cover 3.9+.
-            cmp = cmp["versions"][versions[0]]
-        written.append(render_comparative_benchmark(cmp, png=args.png))
+            written.append(render_comparative_benchmark(cmp["versions"], png=args.png))
+        # Legacy unversioned JSON: wrap as a synthetic "3.x" group so
+        # the new renderer still has something to plot.
+        elif isinstance(cmp, dict) and cmp:
+            written.append(render_comparative_benchmark({"3.x": cmp}, png=args.png))
     for w in written:
         print(f"wrote {w.relative_to(REPO_ROOT)}")
     return 0

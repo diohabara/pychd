@@ -29,6 +29,17 @@ repos:
 
   - repo: local
     hooks:
+      - id: render-figures
+        name: regenerate assets/*.svg from assets/_*.json
+        # Trigger whenever the benchmark JSONs, the renderer, or the
+        # version table they read are touched. We re-run the renderer
+        # unconditionally (it's idempotent + cheap) and stage the
+        # resulting SVGs so README never drifts from the JSON of record.
+        entry: bash -c 'uv run python tools/render_figures.py && git add assets/*.svg'
+        language: system
+        files: '^(assets/_(results|comparison)\.json|tools/render_figures\.py|pychd/versions\.py)$'
+        pass_filenames: false
+        stages: [pre-commit]
       - id: ty-check
         name: ty type-check
         entry: uv run ty check pychd tests
