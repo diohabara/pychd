@@ -12,31 +12,33 @@ opcodes alone.
 
 ![Recovery rate by corpus — Sig / Decl / Strict / BN / BS](assets/recovery_by_corpus.svg)
 
-**Trustworthy headline — `rules-only` mode, 1,228 modules, 514K LoC** (deterministic, no LLM, fully reproducible offline):
+## Headline — and why LLM-assisted decompilers look better than they are
 
-| Metric | Score | What it measures |
-|---|---:|---|
-| `parses` (`ast.parse` succeeds) | 1228/1228 (100.0%) | Recovered source is syntactically valid |
-| `signature_match` | 1226/1228 (99.8%) | Every class/function/import name in the original appears in the recovered tree |
-| `declaration_match` | 1222/1228 (99.6%) | Same plus every module/class-level variable and annotation |
-| `strict_match` | 438/1217 (36.0%) | Full stripped-AST equality (bodies → `pass`, decorators / annotations dropped) |
-| `BS` (behavioral_smoke) | 514/1217 (42.1%) | Recovered module imports under the producing interpreter, public API matches |
+| | Rule-only (no LLM) | Hybrid-rewrite (rule pass + 1 Codex call/module) |
+|---|---:|---:|
+| `parses` | 100 % | 100 % |
+| `signature_match` (headline corpus, stdlib + popular PyPI, contamination likely) | 99.8 % | 100 % |
+| **`strict_match` (headline corpus, contamination likely)** | **36.0 %** | **93.2 %** |
+| **`Pass@1` on HumanEval (published evaluation set, contamination near-certain)** | 2.4 % | **97.6 %** |
+| **`strict_match` (`recent-pypi`, low-contamination proxy: 23 packages uploaded to PyPI in the last few months, each ≤ 5 % of the corpus)** | **45.6 %** | _not yet measured — costs Codex calls; run `just paper` to populate_ |
 
-The 2 modules that fail `signature_match` (CPython's `_colorize.py` and `_pylong.py`) contain `if False:` / `if 0:` guards around imports and dead-code defs that the constant folder erases at compile time. **No decompiler — pychd or otherwise — can recover them from bytecode.** They are an inherent ceiling, not a pychd defect.
+The hybrid-rewrite "93.2 % strict_match / 97.6 % Pass@1" numbers are exactly the kind of headline an LLM-augmented decompiler typically advertises. **They are mostly not measuring decompilation skill.**
 
-> ### Hybrid-rewrite headline numbers are not in the trustworthy block above. Read this first.
->
-> The "1144/1228 (93.2%) strict_match" / "160/164 (97.6%) Pass@1 on HumanEval" numbers you may have seen in older revisions of this README are **upper bounds under unmeasured contamination**, not decompilation skill. Concretely:
->
-> - The `synthetic` corpus was *drafted with LLM assistance during this project's development*, so it is not an LLM-naïve control.
-> - The headline corpus (CPython stdlib, top-20 PyPI packages, OpenAI HumanEval) is overwhelmingly inside any modern frontier model's training data. The Pass@1 97.6 % on HumanEval is almost certainly the LLM recalling published HumanEval *solutions* rather than pychd decompiling correctly.
-> - The 0.2 % `signature_match` gap between rule-only and hybrid-rewrite is closed by the LLM injecting `from typing import IO, Self, ClassVar` lines into modules where the bytecode contains literally zero trace of those imports (see [§LLM contamination disclosure](#llm-contamination-disclosure) for the worked example on `_colorize.py`). That is memorisation, not recovery.
->
-> Treat hybrid-rewrite as an **interesting upper bound**: it shows the *path* (rule pass + module-level LLM rewrite) produces parseable, AST-comparable output end-to-end, and confirms the rule pass + bytecode signal is enough to anchor the LLM. It does **not** show pychd is decompiling at 93 % strict-match on bytecode-only signal — the LLM is supplying source-level priors we can't currently subtract out. See [§LLM contamination disclosure](#llm-contamination-disclosure) for the full audit.
+We have direct evidence (see [§LLM contamination disclosure](#llm-contamination-disclosure)) that on at least some headline-corpus modules the LLM is filling the rule-pass output with text that has *no representation in the bytecode whatsoever* — i.e. memorisation of CPython's source. The 97.6 % Pass@1 on HumanEval is essentially "did Codex remember the canonical HumanEval solution," not "did pychd decompile."
 
-See [§Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers) for the broader 23-module stdlib + PyPI head-to-head.
+The numbers a security-conscious reader should actually trust:
+
+- **Rule-only `strict_match` on `recent-pypi`: 45.6 % (83/182)**. No LLM in the loop, no memorisation channel. Curated for low contamination probability (release-date proxy + a 5 % per-package cap). This is a real, reproducible decompilation measurement.
+- Rule-only `signature_match` on `recent-pypi`: 98.4 % (179/182). Same story.
+- Rule-only `strict_match` on the headline (contaminated) corpus is **36.0 %**, *lower* than on `recent-pypi` — i.e. there's no evidence the rule pass benefits from contamination. The +57 pt jump from 36.0 % rule-only to 93.2 % hybrid-rewrite is **the LLM's contribution, and it's not honest decompilation**.
+
+We think this gap — between what LLM-assisted decompilers advertise and what they actually deliver on unseen bytecode — is the central problem with the current wave of LLM-augmented reverse-engineering tools. **Be suspicious of LLM-assisted decompilers reporting >90 % strict-AST match on any code that could plausibly be in their backend model's training data.**
+
+The 2 headline-corpus modules that fail `signature_match` in rule-only (CPython's `_colorize.py` and `_pylong.py`) contain `if False:` / `if 0:` guards around imports and dead-code defs that the constant folder erases at compile time. **No decompiler — pychd or otherwise — can recover them from bytecode.** Hybrid-rewrite "fixes" them only by memorising the source, which is the worked example in [§LLM contamination disclosure](#llm-contamination-disclosure).
 
 ![Per-tool comparison at each decompiler's preferred Python version](assets/comparison_decompilers.svg)
+
+See [§Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers) for the 23-module stdlib + PyPI head-to-head.
 
 ## Quick start
 

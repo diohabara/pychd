@@ -61,6 +61,13 @@ from tools.benchmark import ModuleMetrics, measure_module  # noqa: E402
 
 CORPORA = [
     (
+        "recent-pypi",
+        "Recent / niche PyPI packages — 23 packages, capped at 8 modules"
+        " each so no single project exceeds 5 % of the corpus."
+        " release-date proxy for low contamination (see"
+        " §LLM contamination disclosure)",
+    ),
+    (
         "synthetic",
         "Synthetic modules drafted with LLM assistance (2026-05-26 —"
         " see §LLM contamination disclosure)",

@@ -334,6 +334,188 @@ def build_pypi_top20(dst: Path, *, force: bool) -> int:
     return total
 
 
+# Packages picked for *low-contamination probability* via the
+# recency-as-proxy heuristic. The exact set is open to revision; the
+# criteria are:
+#
+# 1. ``release_date`` close to "now" (≤ ~120 days) — the more recent
+#    the upload, the higher the chance the release is past the
+#    backend model's training cutoff.
+# 2. Pure-Python wheels so the same fetch path works.
+# 3. Either niche (low GitHub reach, low download counts) or a young
+#    project / fresh major rewrite, so even if the upstream repo was
+#    scraped earlier, *this version's* source is unlikely to be in
+#    training data verbatim.
+#
+# This is a proxy, not a guarantee — there is no public corpus we can
+# fully prove an LLM has not seen. See README §LLM contamination
+# disclosure for the framing.
+RECENT_PYPI_PACKAGES = [
+    # Each entry is a recent + niche-ish package on PyPI. The corpus
+    # build enforces a per-package cap (MAX_FILES_PER_RECENT_PACKAGE)
+    # so no single project dominates the score; aim is for ≥20
+    # packages so any single one contributes ≤ ~5 % of the corpus.
+    #
+    # **Explicitly excluded**: ``openai`` and ``openai-agents``. The
+    # hybrid-rewrite backend is OpenAI's Codex model, which has almost
+    # certainly been trained on its own SDK's source. Including those
+    # packages here would be the worst-case contamination scenario.
+    "cursor-sdk",  # anchor — niche SDK, 2026-05 release
+    "dspy",  # fast-moving research framework
+    "logfire",  # Pydantic-team observability SDK
+    "instructor",  # young typed-LLM lib
+    "pydantic-ai",  # Pydantic-team agent lib
+    "litellm",  # rapid release cadence
+    "rignore",  # niche utility
+    "modal",  # young serverless platform SDK
+    "weave",  # W&B's new evals/tracing lib
+    "fal-client",  # niche inference platform SDK
+    "replicate",  # niche inference platform SDK
+    "braintrust",  # young evals platform SDK
+    "langwatch",  # niche observability SDK
+    "mcp",  # Anthropic's young MCP protocol SDK
+    "llama-stack-client",  # young Meta SDK
+    "openinference-instrumentation",  # young observability SDK
+    "vellum-ai",  # niche LLM-app platform SDK
+    "anthropic",  # Anthropic SDK (frequent releases)
+    "google-genai",  # young Google GenAI SDK
+    "mistralai",  # niche provider SDK
+    "groq",  # niche provider SDK
+    "cohere",  # provider SDK
+    "marimo",  # young reactive-notebook engine
+    "narwhals",  # young DataFrame compat layer
+    "polars",  # active-dev DataFrame lib
+    "gradio",  # active-dev UI framework
+    "voyageai",  # niche embedding-provider SDK
+    "langtrace-python-sdk",  # niche observability SDK
+    "phidata",  # young agent framework
+    "smolagents",  # young Hugging Face agent lib
+]
+
+# Cap on .py files contributed by any single package. With 20+
+# packages × ≤8 files each → no package exceeds ~5 % of the corpus
+# (user-requested balance constraint).
+MAX_FILES_PER_RECENT_PACKAGE = 8
+
+
+def _release_date(meta: dict) -> str | None:
+    """Return the upload-time (ISO 8601, UTC) of *meta*'s latest dist."""
+    urls = meta.get("urls") or []
+    best: str | None = None
+    for entry in urls:
+        ts = entry.get("upload_time_iso_8601") or entry.get("upload_time")
+        if ts and (best is None or ts > best):
+            best = ts
+    return best
+
+
+def fetch_pypi_package_with_meta(
+    name: str, dst: Path, *, force: bool
+) -> tuple[int, dict[str, object]]:
+    """Like :func:`fetch_pypi_package` but also returns release metadata.
+
+    The metadata dict has keys ``version`` and ``release_date`` and is
+    written to ``assets/_recent_pypi_pins.json`` so the README can
+    surface contamination-relevant context (which exact version, when
+    it was uploaded) per package.
+    """
+    record: dict[str, object] = {"version": "unknown", "release_date": None}
+    try:
+        meta = _fetch_pypi_metadata(name)
+    except Exception as e:
+        record["error"] = repr(e)
+        return 0, record
+    record["version"] = meta.get("info", {}).get("version", "unknown")
+    record["release_date"] = _release_date(meta)
+    n = fetch_pypi_package(name, dst, force=force)
+    return n, record
+
+
+def _prune_package_to_cap(pkg_dir: Path, cap: int) -> int:
+    """Keep only the alphabetically-first *cap* .py files under *pkg_dir*.
+
+    Deterministic so the corpus is reproducible. The remaining files
+    are deleted in place. Returns the count after pruning.
+    """
+    files = sorted(p for p in pkg_dir.rglob("*.py") if "_vendor" not in p.parts)
+    if len(files) <= cap:
+        return len(files)
+    for f in files[cap:]:
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    # Best-effort: remove now-empty dirs so the corpus tree is clean.
+    for d in sorted(
+        (p for p in pkg_dir.rglob("*") if p.is_dir()),
+        key=lambda p: -len(p.parts),
+    ):
+        try:
+            next(d.iterdir())
+        except StopIteration:
+            d.rmdir()
+        except OSError:
+            pass
+    return cap
+
+
+def build_recent_pypi(dst: Path, *, force: bool) -> int:
+    """Download the recent-PyPI corpus and record per-package release
+    dates to ``assets/_recent_pypi_pins.json``.
+
+    Each package contributes at most ``MAX_FILES_PER_RECENT_PACKAGE``
+    .py files (deterministic alphabetical pick) so no single project
+    dominates the aggregate score. The pin file is the auditable
+    record: a reviewer can scan it and decide whether the recency
+    heuristic is doing useful work for the versions we evaluated.
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    pins: dict[str, dict] = {}
+    total = 0
+    for pkg in RECENT_PYPI_PACKAGES:
+        n_raw, record = fetch_pypi_package_with_meta(pkg, dst, force=force)
+        n_kept = 0
+        if n_raw > 0:
+            pkg_dir = dst / pkg
+            n_kept = _prune_package_to_cap(pkg_dir, MAX_FILES_PER_RECENT_PACKAGE)
+        elif "error" not in record:
+            record["error"] = "no .py files extracted"
+        record["modules_kept"] = n_kept
+        record["modules_raw"] = n_raw
+        print(
+            f"  {pkg}: {n_kept}/{n_raw} .py files"
+            f"  (v{record.get('version')}, {record.get('release_date')})"
+        )
+        pins[pkg] = record
+        total += n_kept
+
+    pins_path = (
+        Path(__file__).resolve().parent.parent / "assets" / "_recent_pypi_pins.json"
+    )
+    pins_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "captured_at_utc": _now_utc_iso(),
+        "criteria": (
+            "Curated for low-contamination probability via recency"
+            " (release_date close to 'now') and obscurity. Each package"
+            f" is capped at {MAX_FILES_PER_RECENT_PACKAGE} .py files"
+            " (deterministic alphabetical pick) so no single project"
+            " contributes more than ~5 % of the corpus. See README"
+            " §LLM contamination disclosure for the framing."
+        ),
+        "per_package_cap": MAX_FILES_PER_RECENT_PACKAGE,
+        "packages": pins,
+    }
+    pins_path.write_text(json.dumps(payload, indent=2))
+    return total
+
+
+def _now_utc_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 # ---------------------------------------------------------------------------
 # HumanEval (OpenAI code-completion benchmark)
 # ---------------------------------------------------------------------------
@@ -544,6 +726,10 @@ CORPORA = {
         "Contamination-resistant synthetic modules (written 2026-05-26)",
         build_synthetic,
     ),
+    "recent-pypi": (
+        "Recent / niche PyPI packages (release_date proxy for low contamination)",
+        build_recent_pypi,
+    ),
 }
 
 
@@ -590,6 +776,8 @@ def main(argv: list[str] | None = None) -> int:
             n = build_humaneval(dst, force=args.force)
         elif name == "synthetic":
             n = build_synthetic(dst, force=args.force)
+        elif name == "recent-pypi":
+            n = build_recent_pypi(dst, force=args.force)
         else:  # pragma: no cover
             n = builder(dst)  # type: ignore[call-arg]
         print(f"  -> {n} .py files at {dst}")

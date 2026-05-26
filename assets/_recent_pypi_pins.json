@@ -1,0 +1,194 @@
+{
+  "captured_at_utc": "2026-05-26T15:49:28Z",
+  "criteria": "Curated for low-contamination probability via recency (release_date close to 'now') and obscurity. Each package is capped at 8 .py files (deterministic alphabetical pick) so no single project contributes more than ~5 % of the corpus. See README \u00a7LLM contamination disclosure for the framing.",
+  "per_package_cap": 8,
+  "packages": {
+    "cursor-sdk": {
+      "version": "0.1.5",
+      "release_date": "2026-05-22T17:52:52.713649Z",
+      "error": "no .py files extracted",
+      "modules_kept": 0,
+      "modules_raw": 0
+    },
+    "dspy": {
+      "version": "3.2.1",
+      "release_date": "2026-05-05T19:35:07.471774Z",
+      "modules_kept": 8,
+      "modules_raw": 140
+    },
+    "logfire": {
+      "version": "4.33.0",
+      "release_date": "2026-05-13T15:14:15.588342Z",
+      "modules_kept": 8,
+      "modules_raw": 120
+    },
+    "instructor": {
+      "version": "1.15.1",
+      "release_date": "2026-04-03T01:51:30.107614Z",
+      "modules_kept": 8,
+      "modules_raw": 100
+    },
+    "pydantic-ai": {
+      "version": "1.102.0",
+      "release_date": "2026-05-23T01:14:30.493330Z",
+      "error": "no .py files extracted",
+      "modules_kept": 0,
+      "modules_raw": 0
+    },
+    "litellm": {
+      "version": "1.86.1",
+      "release_date": "2026-05-26T03:51:58.624299Z",
+      "modules_kept": 8,
+      "modules_raw": 1812
+    },
+    "rignore": {
+      "version": "0.7.6",
+      "release_date": "2025-11-05T21:42:00.095534Z",
+      "error": "no .py files extracted",
+      "modules_kept": 0,
+      "modules_raw": 0
+    },
+    "modal": {
+      "version": "1.4.3",
+      "release_date": "2026-05-18T22:34:45.842198Z",
+      "modules_kept": 8,
+      "modules_raw": 139
+    },
+    "weave": {
+      "version": "0.52.41",
+      "release_date": "2026-05-19T22:03:03.124649Z",
+      "modules_kept": 8,
+      "modules_raw": 402
+    },
+    "fal-client": {
+      "version": "1.0.0",
+      "release_date": "2026-04-28T22:42:32.469526Z",
+      "modules_kept": 6,
+      "modules_raw": 6
+    },
+    "replicate": {
+      "version": "1.0.7",
+      "release_date": "2025-05-27T11:29:08.111148Z",
+      "modules_kept": 8,
+      "modules_raw": 21
+    },
+    "braintrust": {
+      "version": "0.22.1",
+      "release_date": "2026-05-22T18:25:42.286700Z",
+      "modules_kept": 8,
+      "modules_raw": 282
+    },
+    "langwatch": {
+      "version": "0.22.0",
+      "release_date": "2026-04-22T08:17:20.822169Z",
+      "modules_kept": 8,
+      "modules_raw": 1175
+    },
+    "mcp": {
+      "version": "1.27.1",
+      "release_date": "2026-05-08T16:50:12.601867Z",
+      "modules_kept": 8,
+      "modules_raw": 109
+    },
+    "llama-stack-client": {
+      "version": "0.7.2",
+      "release_date": "2026-04-08T14:19:32.020669Z",
+      "modules_kept": 8,
+      "modules_raw": 276
+    },
+    "openinference-instrumentation": {
+      "version": "0.1.52",
+      "release_date": "2026-05-22T21:10:45.943557Z",
+      "error": "no .py files extracted",
+      "modules_kept": 0,
+      "modules_raw": 0
+    },
+    "vellum-ai": {
+      "version": "1.14.7",
+      "release_date": "2026-03-05T21:14:22.996988Z",
+      "modules_kept": 8,
+      "modules_raw": 169
+    },
+    "anthropic": {
+      "version": "0.104.1",
+      "release_date": "2026-05-22T15:36:59.519007Z",
+      "error": "no .py files extracted",
+      "modules_kept": 0,
+      "modules_raw": 0
+    },
+    "google-genai": {
+      "version": "2.6.0",
+      "release_date": "2026-05-22T01:34:33.581138Z",
+      "modules_kept": 8,
+      "modules_raw": 388
+    },
+    "mistralai": {
+      "version": "2.4.7",
+      "release_date": "2026-05-25T08:19:41.706422Z",
+      "error": "no .py files extracted",
+      "modules_kept": 0,
+      "modules_raw": 0
+    },
+    "groq": {
+      "version": "1.2.0",
+      "release_date": "2026-04-18T10:43:50.680603Z",
+      "modules_kept": 8,
+      "modules_raw": 94
+    },
+    "cohere": {
+      "version": "7.0.0",
+      "release_date": "2026-05-22T18:48:47.982261Z",
+      "modules_kept": 8,
+      "modules_raw": 340
+    },
+    "marimo": {
+      "version": "0.23.8",
+      "release_date": "2026-05-22T16:24:19.881595Z",
+      "modules_kept": 8,
+      "modules_raw": 810
+    },
+    "narwhals": {
+      "version": "2.21.2",
+      "release_date": "2026-05-16T08:49:08.314838Z",
+      "modules_kept": 8,
+      "modules_raw": 162
+    },
+    "polars": {
+      "version": "1.41.0",
+      "release_date": "2026-05-22T20:20:56.209777Z",
+      "modules_kept": 8,
+      "modules_raw": 204
+    },
+    "gradio": {
+      "version": "6.14.0",
+      "release_date": "2026-04-30T16:50:31.698290Z",
+      "modules_kept": 8,
+      "modules_raw": 174
+    },
+    "voyageai": {
+      "version": "unknown",
+      "release_date": null,
+      "error": "URLError(ConnectionResetError(104, 'Connection reset by peer'))",
+      "modules_kept": 0,
+      "modules_raw": 0
+    },
+    "langtrace-python-sdk": {
+      "version": "3.8.21",
+      "release_date": "2025-07-24T21:03:34.508661Z",
+      "modules_kept": 8,
+      "modules_raw": 149
+    },
+    "phidata": {
+      "version": "2.7.10",
+      "release_date": "2025-01-27T14:27:54.142071Z",
+      "modules_kept": 8,
+      "modules_raw": 524
+    },
+    "smolagents": {
+      "version": "1.25.0",
+      "release_date": "2026-05-14T11:36:18.356786Z",
+      "modules_kept": 8,
+      "modules_raw": 20
+    }
+  }
+}
