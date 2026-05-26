@@ -318,9 +318,7 @@ def render_version_coverage(*, png: bool = False) -> Path:
         "llm-only": COLOR_NEUTRAL,
     }
     bar_colors = [colors[p] for p in passes]
-    text_labels = [
-        f"{n} rev{'s' if n != 1 else ''}<br>{p}" for n, p in zip(heights, passes)
-    ]
+    text_labels = [f"{n}" for n in heights]
 
     fig = go.Figure()
     fig.add_bar(
@@ -349,15 +347,12 @@ def render_version_coverage(*, png: bool = False) -> Path:
             showlegend=True,
         )
     fig.update_layout(
-        title=(
-            "Rule-pass coverage across CPython 3.6 – 3.14"
-            " (bar = # of magic-number revisions per minor)"
-        ),
+        title="Rule-pass coverage across CPython 3.6 – 3.14",
         template=PLOTLY_TEMPLATE,
         yaxis=dict(title="Magic-number revisions covered", rangemode="tozero"),
         xaxis=dict(title="Python minor release", type="category"),
         legend=dict(orientation="h", y=-0.2),
-        margin=dict(l=60, r=20, t=80, b=100),
+        margin=dict(l=60, r=20, t=70, b=100),
         bargap=0.25,
     )
     return _write(fig, "version_coverage", png=png)
@@ -401,7 +396,13 @@ def render_comparative_benchmark(
         fig.update_layout(title="No comparison data — run tools/compare_decompilers.py")
         return _write(fig, "comparison_decompilers", png=png)
 
-    labels = [f"{tool}<br>@ Py {v}" for tool, v, _ in columns]
+    def short_name(tool: str) -> str:
+        # "pychd (hybrid-rewrite:codex)" → "pychd" so labels don't
+        # overlap when 7 columns share the 900px canvas. The qualifier
+        # is preserved in the legend / per-version detail table.
+        return tool.split(" (")[0]
+
+    labels = [f"{short_name(tool)}<br>@ Py {v}" for tool, v, _ in columns]
 
     def rate(data: dict[str, Any], key: str) -> float:
         return 100 * data.get(key, 0) / max(1, data["modules"])
@@ -468,16 +469,13 @@ def render_comparative_benchmark(
     )
 
     fig.update_layout(
-        title=(
-            "Per-tool comparison at each tool's preferred Python version"
-            " — eight-axis (no shared-version handicap)"
-        ),
+        title="Each tool at its preferred Python version",
         template=PLOTLY_TEMPLATE,
         barmode="group",
         yaxis=dict(title="Rate (%)", range=[0, 105]),
         xaxis=dict(title="Decompiler @ Python version", tickangle=0),
         legend=dict(orientation="h", y=-0.25),
-        margin=dict(l=60, r=20, t=80, b=140),
+        margin=dict(l=60, r=20, t=70, b=140),
     )
     return _write(fig, "comparison_decompilers", png=png)
 
