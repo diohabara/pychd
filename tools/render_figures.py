@@ -69,40 +69,56 @@ PLOTLY_TEMPLATE = "plotly_white"
 def _normalize_svg(svg_text: str, name: str) -> str:
     """Replace Plotly's per-render random IDs with deterministic ones.
 
-    Plotly's SVG output embeds a fresh 6-hex random suffix on every
-    ``<defs>`` / ``<clipPath>`` element (e.g. ``clip2d6634xyplot``).
-    That suffix changes on every render even when the data is
-    byte-identical, which keeps the pre-commit hook in a perpetual
-    "files were modified" loop. We rewrite the suffix to a stable
-    hash derived from the figure name so re-running the renderer is
-    a true no-op when nothing meaningful changed.
+    Plotly stamps every ``<defs>`` / ``<clipPath>`` / heatmap group /
+    gradient with a fresh hex suffix on every render — e.g.
+    ``clip2d6634xyplot``, ``gebb666-45449b96``, ``hycbce8b``. Suffixes
+    rotate even when the data is byte-identical, which used to trap the
+    pre-commit hook in a "files modified" loop. We discover every
+    distinct ≥6-hex token in the file (skipping CSS colour literals,
+    which are always prefixed with ``#`` or wrapped in ``rgb(...)``)
+    and rewrite each to a stable hash derived from the figure name +
+    the token's *position rank* in the original SVG. Rank-based
+    seeding keeps the mapping stable across runs even if Plotly picks
+    a different random pool, as long as the *number* and *length* of
+    tokens stay constant.
     """
     import hashlib
     import re
 
-    pattern = re.compile(r"[0-9a-f]{6}")
-    digest = hashlib.sha1(name.encode()).hexdigest()[:6]
-    # Plotly's suffix sits between a known prefix ("defs-", "clip",
-    # "legend", "topdefs-") and either end-of-token or a known
-    # secondary suffix ("x", "y", "xy", "xyplot"). Replace only those
-    # occurrences so we don't clobber colour hex codes elsewhere.
+    # Tokens of ≥6 hex characters that are NOT immediately preceded by
+    # `#` (which would mark them as a CSS colour) and NOT inside an
+    # `rgb(...)` triplet. Plotly's random IDs sit in attribute values
+    # like `id="clipebb666xy"` or `url(#gebb666-45449b96)`.
+    token_re = re.compile(r"(?<![#0-9a-fA-F])[0-9a-f]{6,}")
+    seen: list[str] = []
+    for match in token_re.finditer(svg_text):
+        tok = match.group(0)
+        if tok not in seen:
+            seen.append(tok)
+    mapping: dict[str, str] = {}
+    for rank, tok in enumerate(seen):
+        seed = f"{name}:{rank}:{len(tok)}".encode()
+        mapping[tok] = hashlib.sha1(seed).hexdigest()[: len(tok)]
     out = svg_text
-    for prefix in ("defs-", "clip", "legend", "topdefs-"):
-        out = re.sub(
-            re.escape(prefix) + pattern.pattern,
-            prefix + digest,
-            out,
-        )
-    # Trailing newline so end-of-file-fixer doesn't keep "fixing" it.
+    # Replace longer tokens first so a 6-hex prefix doesn't clobber an
+    # 8-hex token of which it's the leading substring.
+    for tok in sorted(mapping, key=len, reverse=True):
+        out = out.replace(tok, mapping[tok])
     if not out.endswith("\n"):
         out += "\n"
     return out
 
 
-def _write(fig: go.Figure, name: str, *, png: bool = False) -> Path:
+def _write(
+    fig: go.Figure,
+    name: str,
+    *,
+    png: bool = False,
+    height: int = 520,
+) -> Path:
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     svg_path = ASSET_DIR / f"{name}.svg"
-    fig.write_image(str(svg_path), format="svg", width=900, height=520, scale=1)
+    fig.write_image(str(svg_path), format="svg", width=900, height=height, scale=1)
     # Normalise non-deterministic plotly IDs so re-renders are no-ops
     # when the chart data hasn't changed (the pre-commit hook depends
     # on this to avoid an infinite "files modified" loop).
@@ -110,7 +126,9 @@ def _write(fig: go.Figure, name: str, *, png: bool = False) -> Path:
     svg_path.write_text(normalised)
     if png:
         png_path = ASSET_DIR / f"{name}.png"
-        fig.write_image(str(png_path), format="png", width=1800, height=1040, scale=2)
+        fig.write_image(
+            str(png_path), format="png", width=1800, height=height * 2, scale=2
+        )
     return svg_path
 
 
@@ -294,68 +312,74 @@ def render_paper_axes_by_corpus(
 
 
 def render_version_coverage(*, png: bool = False) -> Path:
-    """Bar chart of magic-number revisions covered per Python minor release.
+    """Categorical strip of which rule pass each Python minor uses.
 
-    Bar height = number of distinct CPython magic numbers (micro-release
-    bytecode revisions) routed to a rule pass for that minor. Bar colour
-    encodes which rule pass handles the minor (native / cross-version).
-    The chart is limited to 3.6+ — the realistic deployment range for
-    modern Python — since CPython 3.0-3.5 are EOL and including them
-    flattens the chart with versions nobody compiles bytecode against.
+    The previous bar-chart variant encoded "magic-number revisions per
+    minor" as bar height, which is exactly the kind of irrelevant-
+    information encoding Wilke's *Fundamentals of Data Visualization*
+    (Ch. 19) warns against: readers care which Python releases pychd
+    handles, not how many micro-release bytecode bumps CPython shipped.
+    A single-row categorical strip (rectangles with one cell per minor,
+    coloured by rule-pass type, with the minor printed inside) carries
+    the same information without the misleading height channel.
     """
     from pychd.versions import KNOWN_VERSIONS, rule_pass_for
 
-    counts: dict[tuple[int, int], int] = {}
-    for info in KNOWN_VERSIONS.values():
-        counts[info.version] = counts.get(info.version, 0) + 1
-    minors = sorted(m for m in counts if m >= (3, 6))
+    minors = sorted(
+        {info.version for info in KNOWN_VERSIONS.values()}
+        & {(3, m) for m in range(6, 15)}
+    )
     labels = [f"3.{m[1]}" for m in minors]
     passes = [rule_pass_for(m) for m in minors]
-    heights = [counts[m] for m in minors]
-    colors = {
-        "native": COLOR_DECLARATION,
-        "cross-version": COLOR_SIGNATURE,
-        "llm-only": COLOR_NEUTRAL,
-    }
-    bar_colors = [colors[p] for p in passes]
-    text_labels = [f"{n}" for n in heights]
 
-    fig = go.Figure()
-    fig.add_bar(
-        x=labels,
-        y=heights,
-        marker_color=bar_colors,
-        text=text_labels,
-        textposition="outside",
-        hovertemplate=(
-            "Python %{x}<br>%{y} magic-number revision(s)<br>"
-            "rule pass: %{customdata}<extra></extra>"
-        ),
-        customdata=passes,
-        showlegend=False,
+    pass_to_index = {"cross-version": 0, "native": 1, "llm-only": 2}
+    z = [[pass_to_index[p] for p in passes]]
+    cell_text = [[f"<b>{lbl}</b><br>{p}" for lbl, p in zip(labels, passes)]]
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=labels,
+            y=["rule pass"],
+            text=cell_text,
+            texttemplate="%{text}",
+            textfont=dict(size=12, color="white"),
+            colorscale=[
+                [0.0, COLOR_SIGNATURE],  # cross-version → blue
+                [0.5, COLOR_DECLARATION],  # native → green
+                [1.0, COLOR_NEUTRAL],  # llm-only (unused) → grey
+            ],
+            zmin=0,
+            zmax=2,
+            showscale=False,
+            xgap=2,
+            ygap=0,
+            hovertemplate="Python %{x} — %{text}<extra></extra>",
+        )
     )
-    # Legend proxies — empty traces just so the colour key shows up.
-    for label, key in [
-        ("Native rule pass (3.14)", "native"),
-        ("Cross-version rule pass (3.6 – 3.13)", "cross-version"),
+    # Legend proxies for the two encodings actually present.
+    for label, color in [
+        ("Cross-version rule pass (3.6 – 3.13)", COLOR_SIGNATURE),
+        ("Native rule pass (3.14)", COLOR_DECLARATION),
     ]:
-        fig.add_bar(
+        fig.add_scatter(
             x=[None],
             y=[None],
+            mode="markers",
+            marker=dict(size=14, color=color, symbol="square"),
             name=label,
-            marker_color=colors[key],
             showlegend=True,
         )
     fig.update_layout(
         title="Rule-pass coverage across CPython 3.6 – 3.14",
         template=PLOTLY_TEMPLATE,
-        yaxis=dict(title="Magic-number revisions covered", rangemode="tozero"),
-        xaxis=dict(title="Python minor release", type="category"),
-        legend=dict(orientation="h", y=-0.2),
-        margin=dict(l=60, r=20, t=70, b=100),
-        bargap=0.25,
+        xaxis=dict(showticklabels=False, ticks="", showgrid=False, zeroline=False),
+        yaxis=dict(showticklabels=False, ticks="", showgrid=False, zeroline=False),
+        legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
+        margin=dict(l=40, r=40, t=70, b=80),
+        height=220,
     )
-    return _write(fig, "version_coverage", png=png)
+    return _write(fig, "version_coverage", png=png, height=220)
 
 
 def render_comparative_benchmark(
@@ -363,17 +387,21 @@ def render_comparative_benchmark(
     *,
     png: bool = False,
 ) -> Path:
-    """Bar chart comparing pychd vs other decompilers at each tool's
-    *own* preferred Python version.
+    """Heatmap comparing pychd vs other decompilers across every metric.
 
-    Why not pin every tool to a single Python release: uncompyle6 /
-    decompyle3 cap out at 3.8, pycdc is best on 3.10, and pylingual
-    targets 3.13. Forcing them all onto 3.8 (the old chart) artificially
-    advantaged the legacy tools and excluded the modern ones outright.
-    We now plot every (tool, Python version) pair that actually
-    produced scoring rows in ``_comparison.json``, so each tool is
-    judged at its strongest version and pychd appears once per version
-    to make the cross-version coverage story visible.
+    The previous design was a grouped bar chart with 7 tool-version
+    columns × 8 metrics = 56 bars in a single panel — exactly the
+    "complex" case Wilke's *Fundamentals of Data Visualization* (Ch. 6)
+    flags ("seven groups of four data values can result in a figure
+    that is complex"). The heatmap maps tool-version → row,
+    metric → column, score → cell colour, and prints the percentage
+    inside each cell so the matrix is both scannable for patterns and
+    precise for individual lookups.
+
+    Each tool runs at its *own* preferred Python version (uncompyle6 /
+    decompyle3 → 3.8, pycdc → 3.10, pylingual → 3.13). pychd appears
+    once per version so the cross-version coverage story stays visible
+    side-by-side with each competitor's best-case Python.
     """
 
     def version_key(v: str) -> tuple[int, int]:
@@ -381,103 +409,95 @@ def render_comparative_benchmark(
 
     versions = sorted(versioned, key=version_key)
 
-    # Collect every (tool, version) pair that actually ran. Skipped
-    # tools (modules == 0, error mentions "out of scope" or
-    # "not installed") drop out — they appear elsewhere in the README's
-    # cross-version matrix as "— (not run)" / "not installed".
-    columns: list[tuple[str, str, dict[str, Any]]] = []
+    rows: list[tuple[str, str, dict[str, Any]]] = []
     for v in versions:
         for tool, data in versioned[v].items():
             if data.get("modules", 0) > 0:
-                columns.append((tool, v, data))
+                rows.append((tool, v, data))
 
-    if not columns:
+    if not rows:
         fig = go.Figure()
         fig.update_layout(title="No comparison data — run tools/compare_decompilers.py")
         return _write(fig, "comparison_decompilers", png=png)
 
     def short_name(tool: str) -> str:
-        # "pychd (hybrid-rewrite:codex)" → "pychd" so labels don't
-        # overlap when 7 columns share the 900px canvas. The qualifier
-        # is preserved in the legend / per-version detail table.
         return tool.split(" (")[0]
 
-    labels = [f"{short_name(tool)}<br>@ Py {v}" for tool, v, _ in columns]
+    row_labels = [f"{short_name(tool)} @ Py {v}" for tool, v, _ in rows]
 
-    def rate(data: dict[str, Any], key: str) -> float:
-        return 100 * data.get(key, 0) / max(1, data["modules"])
+    # Metric layout: static-AST axes first (sig → strict), then the
+    # semantic axes (bytecode + behavioural), then edit similarity. The
+    # paper-aligned Pass@1 column is omitted: this corpus has no test
+    # oracle, so every tool would print "n/a" and add noise.
+    metric_specs: list[tuple[str, str]] = [
+        ("Parses", "parses"),
+        ("Signature", "signature_match"),
+        ("Declaration", "declaration_match"),
+        ("Strict", "strict_match"),
+        ("BX", "bytecode_exact"),
+        ("BN", "bytecode_normalized"),
+        ("BS", "behavioral_smoke"),
+        ("ED ×100", "edit_similarity_sum"),
+    ]
+    col_labels = [m[0] for m in metric_specs]
 
-    fig = go.Figure()
-    fig.add_bar(
-        name="Output parses",
-        x=labels,
-        y=[rate(d, "parses") for _, _, d in columns],
-        marker_color="#bbbbbb",
-        hovertemplate="%{y:.1f}%<extra>output parses</extra>",
-    )
-    fig.add_bar(
-        name="Signature match",
-        x=labels,
-        y=[rate(d, "signature_match") for _, _, d in columns],
-        marker_color=COLOR_SIGNATURE,
-        hovertemplate="%{y:.1f}%<extra>signature match</extra>",
-    )
-    fig.add_bar(
-        name="Declaration match",
-        x=labels,
-        y=[rate(d, "declaration_match") for _, _, d in columns],
-        marker_color=COLOR_DECLARATION,
-        hovertemplate="%{y:.1f}%<extra>declaration match</extra>",
-    )
-    fig.add_bar(
-        name="Strict match",
-        x=labels,
-        y=[rate(d, "strict_match") for _, _, d in columns],
-        marker_color=COLOR_STRICT,
-        hovertemplate="%{y:.1f}%<extra>stripped-AST equality</extra>",
-    )
-    fig.add_bar(
-        name="bytecode_exact",
-        x=labels,
-        y=[rate(d, "bytecode_exact") for _, _, d in columns],
-        marker_color=COLOR_BX,
-        hovertemplate="%{y:.1f}%<extra>marshal payload identical</extra>",
-    )
-    fig.add_bar(
-        name="bytecode_normalized",
-        x=labels,
-        y=[rate(d, "bytecode_normalized") for _, _, d in columns],
-        marker_color=COLOR_BN,
-        hovertemplate="%{y:.1f}%<extra>canonical instruction stream</extra>",
-    )
-    fig.add_bar(
-        name="behavioral_smoke",
-        x=labels,
-        y=[rate(d, "behavioral_smoke") for _, _, d in columns],
-        marker_color=COLOR_BS,
-        hovertemplate="%{y:.1f}%<extra>import + public surface</extra>",
-    )
-    fig.add_bar(
-        name="Edit Similarity (×100)",
-        x=labels,
-        y=[
-            100 * d.get("edit_similarity_sum", 0.0) / max(1, d["modules"])
-            for _, _, d in columns
-        ],
-        marker_color=COLOR_ED,
-        hovertemplate="%{y:.1f}<extra>mean Ratcliff-Obershelp ratio × 100</extra>",
+    def cell_value(data: dict[str, Any], key: str) -> float:
+        n = max(1, data.get("modules", 0))
+        if key == "edit_similarity_sum":
+            return 100 * data.get(key, 0.0) / n
+        return 100 * data.get(key, 0) / n
+
+    z: list[list[float]] = []
+    text: list[list[str]] = []
+    for _, _, data in rows:
+        z_row: list[float] = []
+        t_row: list[str] = []
+        for _, key in metric_specs:
+            v = cell_value(data, key)
+            z_row.append(v)
+            t_row.append(f"{v:.0f}")
+        z.append(z_row)
+        text.append(t_row)
+
+    # Sequential single-hue scale (perceptually uniform, monotonic) —
+    # Wilke Ch. 4: ordered data deserves an ordered colour scale. Light
+    # cells stand for low scores, dark cells for high. Annotations are
+    # drawn in two colours so they stay legible on both ends of the
+    # ramp (white on dark, near-black on light).
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=col_labels,
+            y=row_labels,
+            text=text,
+            texttemplate="%{text}",
+            textfont=dict(size=12),
+            colorscale="Blues",
+            zmin=0,
+            zmax=100,
+            colorbar=dict(
+                title=dict(text="Rate (%)", side="right"),
+                thickness=14,
+                len=0.75,
+            ),
+            xgap=2,
+            ygap=2,
+            hovertemplate="%{y} · %{x} = %{z:.1f}%<extra></extra>",
+        )
     )
 
     fig.update_layout(
         title="Each tool at its preferred Python version",
         template=PLOTLY_TEMPLATE,
-        barmode="group",
-        yaxis=dict(title="Rate (%)", range=[0, 105]),
-        xaxis=dict(title="Decompiler @ Python version", tickangle=0),
-        legend=dict(orientation="h", y=-0.25),
-        margin=dict(l=60, r=20, t=70, b=140),
+        xaxis=dict(title="Metric", side="top", tickfont=dict(size=12)),
+        # Plotly heatmaps place y=0 at the bottom by default, so the
+        # natural reading order (top = first row in the data) requires
+        # an explicit reversal of the auto-range.
+        yaxis=dict(title="", autorange="reversed", tickfont=dict(size=12)),
+        margin=dict(l=180, r=20, t=110, b=40),
+        height=420,
     )
-    return _write(fig, "comparison_decompilers", png=png)
+    return _write(fig, "comparison_decompilers", png=png, height=420)
 
 
 def main(argv: list[str] | None = None) -> int:

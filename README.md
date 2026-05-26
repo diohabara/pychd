@@ -1087,7 +1087,7 @@ Bars = signature match · declaration match · strict match per corpus.
 
 ![Rule-pass coverage across CPython 3.6 – 3.14](assets/version_coverage.svg)
 
-Bar height = number of distinct CPython magic-number revisions (micro-release bytecode bumps) covered per Python minor. Colour = which rule pass handles the minor: **green** = native walker (3.14 only, full-fidelity), **blue** = cross-version walker (3.6 – 3.13, declaration-level via xdis). The chart is limited to 3.6+ since 3.0 – 3.5 are EOL; pychd still recognises their magic numbers (see [Cross-version support](#cross-version-support) below), but no current build target compiles bytecode against them.
+One cell per CPython minor release. Colour = which rule pass handles it: **blue** = cross-version walker (3.6 – 3.13, declaration-level via xdis), **green** = native walker (3.14, full-fidelity). The strip avoids the "height encodes irrelevant information" pitfall (Wilke, *Fundamentals of Data Visualization* §19): readers care which releases pychd handles, not how many micro-release bytecode bumps CPython shipped. The chart is limited to 3.6+ since 3.0 – 3.5 are EOL; pychd still recognises their magic numbers (see [Cross-version support](#cross-version-support) below), but no current build target compiles bytecode against them.
 
 #### Residual failure attribution
 
@@ -1196,9 +1196,9 @@ Run-time notes for reviewers reproducing the comparison:
   discard. Reviewers who want the full matrix can drop the skip-guard
   block in `_run_one_version`.
 
-![Per-tool comparison at each tool's preferred Python version — 23 real-world modules](assets/comparison_decompilers.svg)
+![Per-tool comparison heatmap at each tool's preferred Python version — 23 real-world modules](assets/comparison_decompilers.svg)
 
-Each tool is plotted **at the Python version it was designed for** (uncompyle6 / decompyle3 → 3.8, pycdc → 3.10, pylingual → 3.13). pychd appears in all three groups so the cross-version coverage story is visible side-by-side with each competitor's best-case Python. This figure (and every SVG under `assets/`) is regenerated from `assets/_comparison.json` and `assets/_results.json` by `just paper` / `just bench-figures`, and a pre-commit hook re-stages them whenever the JSONs change.
+One row per (tool, Python version) pair, one column per metric, cell colour = score (sequential single-hue, 0 → 100 %), with the percentage printed inside each cell. A heatmap is preferred to grouped bars here per Wilke, *Fundamentals of Data Visualization* §6 ("seven groups of four data values can result in a figure that is complex" — this matrix is 7 × 8 = 56 cells). Each tool is scored at the Python version it was designed for (uncompyle6 / decompyle3 → 3.8, pycdc → 3.10, pylingual → 3.13); pychd appears in all three so the cross-version coverage story sits side-by-side with each competitor's best-case Python. This figure (and every SVG under `assets/`) is regenerated from `assets/_comparison.json` and `assets/_results.json` by `just paper` / `just bench-figures`, and a pre-commit hook re-stages them whenever the JSONs change.
 
 <!-- BEGIN: comparison-generated -->
 
