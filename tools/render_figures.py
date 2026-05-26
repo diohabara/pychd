@@ -332,21 +332,22 @@ def render_comparative_benchmark(
     *,
     png: bool = False,
 ) -> Path:
-    """Heatmap comparing pychd vs other decompilers across every metric.
+    """Faceted (small-multiples) grouped bar chart, one panel per
+    Python version, with bar height = metric score.
 
-    The previous design was a grouped bar chart with 7 tool-version
-    columns × 8 metrics = 56 bars in a single panel — exactly the
-    "complex" case Wilke's *Fundamentals of Data Visualization* (Ch. 6)
-    flags ("seven groups of four data values can result in a figure
-    that is complex"). The heatmap maps tool-version → row,
-    metric → column, score → cell colour, and prints the percentage
-    inside each cell so the matrix is both scannable for patterns and
-    precise for individual lookups.
+    Design history:
 
-    Each tool runs at its *own* preferred Python version (uncompyle6 /
-    decompyle3 → 3.8, pycdc → 3.10, pylingual → 3.13). pychd appears
-    once per version so the cross-version coverage story stays visible
-    side-by-side with each competitor's best-case Python.
+    * v1 was a single grouped-bar panel with every tool forced to
+      Python 3.8 — biased against modern decompilers (codex review).
+    * v2 was a heatmap with all (tool, version) pairs as rows. Honest
+      data, but cell colour is a *position-after-decoding* channel
+      (Cleveland) and the cell text vanished into mid-range blues
+      even with luminance-adaptive colours.
+    * v3 (this version): facet by Python version. Each panel holds
+      ≤3 tools × 8 metrics = 24 bars, which is in the Wilke "easy to
+      read" range. Bar height carries the magnitude directly, panels
+      stay scannable, and pychd-across-versions is recovered by
+      reading panels left to right.
     """
 
     def version_key(v: str) -> tuple[int, int]:
@@ -368,23 +369,16 @@ def render_comparative_benchmark(
     def short_name(tool: str) -> str:
         return tool.split(" (")[0]
 
-    row_labels = [f"{short_name(tool)} @ Py {v}" for tool, v, _ in rows]
-
-    # Metric layout: static-AST axes first (sig → strict), then the
-    # semantic axes (bytecode + behavioural), then edit similarity. The
-    # paper-aligned Pass@1 column is omitted: this corpus has no test
-    # oracle, so every tool would print "n/a" and add noise.
-    metric_specs: list[tuple[str, str]] = [
-        ("Parses", "parses"),
-        ("Signature", "signature_match"),
-        ("Declaration", "declaration_match"),
-        ("Strict", "strict_match"),
-        ("Bytecode<br>exact", "bytecode_exact"),
-        ("Bytecode<br>norm.", "bytecode_normalized"),
-        ("Behavioral<br>smoke", "behavioral_smoke"),
-        ("Edit<br>sim. ×100", "edit_similarity_sum"),
+    metric_specs: list[tuple[str, str, str]] = [
+        ("Parses", "parses", "#bbbbbb"),
+        ("Signature", "signature_match", COLOR_SIGNATURE),
+        ("Declaration", "declaration_match", COLOR_DECLARATION),
+        ("Strict", "strict_match", COLOR_STRICT),
+        ("Bytecode exact", "bytecode_exact", COLOR_BX),
+        ("Bytecode norm.", "bytecode_normalized", COLOR_BN),
+        ("Behavioral smoke", "behavioral_smoke", COLOR_BS),
+        ("Edit sim. ×100", "edit_similarity_sum", COLOR_ED),
     ]
-    col_labels = [m[0] for m in metric_specs]
 
     def cell_value(data: dict[str, Any], key: str) -> float:
         n = max(1, data.get("modules", 0))
@@ -392,101 +386,76 @@ def render_comparative_benchmark(
             return 100 * data.get(key, 0.0) / n
         return 100 * data.get(key, 0) / n
 
-    z: list[list[float]] = []
-    for _, _, data in rows:
-        z.append([cell_value(data, key) for _, key in metric_specs])
+    # Group rows by Python version into panel buckets.
+    panels: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for tool, v, data in rows:
+        panels.setdefault(v, []).append((tool, data))
+    panel_versions = sorted(panels, key=version_key)
 
-    # Sequential single-hue scale with a non-white floor — codex
-    # review fix #6: the default Blues ramp makes 0 % cells visually
-    # indistinguishable from "missing data" / page background, which
-    # is the very confusion Wilke (§19) warns against. We anchor the
-    # low end at a light blue-grey so 0 % is still clearly "a cell
-    # with a score" rather than absence.
-    colorscale = [
-        [0.00, "#dde5ee"],
-        [0.25, "#a8c1da"],
-        [0.50, "#6e96bf"],
-        [0.75, "#3a6da3"],
-        [1.00, "#0d3b66"],
-    ]
+    from plotly.subplots import make_subplots  # noqa: E402
 
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=z,
-            x=col_labels,
-            y=row_labels,
-            colorscale=colorscale,
-            zmin=0,
-            zmax=100,
-            colorbar=dict(
-                title=dict(text="Rate (%)", side="right"),
-                thickness=14,
-                len=0.75,
-            ),
-            xgap=2,
-            ygap=2,
-            hovertemplate="%{y} · %{x} = %{z:.1f}%<extra></extra>",
-        )
+    fig = make_subplots(
+        rows=1,
+        cols=len(panel_versions),
+        shared_yaxes=True,
+        horizontal_spacing=0.04,
+        subplot_titles=[f"Python {v}" for v in panel_versions],
     )
 
-    # Per-cell annotations with luminance-based text colour (codex
-    # review fix #7). Threshold derived empirically from the
-    # colorscale above: cells above ~55 % land on a navy where
-    # near-white text reads clearly; below that, dark text on the
-    # pale-blue floor reads better.
-    annotations = []
-    for ri, row in enumerate(z):
-        for ci, value in enumerate(row):
-            annotations.append(
-                dict(
-                    x=col_labels[ci],
-                    y=row_labels[ri],
-                    text=f"{value:.0f}",
-                    showarrow=False,
-                    font=dict(
-                        size=13,
-                        color="#f8f9fb" if value >= 55 else "#1a1a1a",
-                    ),
-                )
+    # One trace per metric across the *whole* figure, but each metric
+    # is added panel-by-panel with showlegend=True only on the first
+    # panel so we end up with eight legend entries total instead of
+    # eight per panel.
+    for mi, (metric_name, key, color) in enumerate(metric_specs):
+        for pi, v in enumerate(panel_versions, start=1):
+            tools = panels[v]
+            x_labels = [short_name(t) for t, _ in tools]
+            y_values = [cell_value(d, key) for _, d in tools]
+            # Replace pure zeros with a 1.2-unit floor so the bar is
+            # visible as "explicitly zero" rather than "missing"
+            # (codex review #1: zero bars vanish into the panel
+            # background). The hover/label text still shows the
+            # accurate value.
+            y_drawn = [max(v, 1.2) for v in y_values]
+            text_labels = [f"{v:.0f}" if v < 5 else "" for v in y_values]
+            fig.add_bar(
+                name=metric_name,
+                x=x_labels,
+                y=y_drawn,
+                customdata=y_values,
+                marker_color=color,
+                marker_line_color="#222222",
+                marker_line_width=[0.6 if v < 1.0 else 0 for v in y_values],
+                text=text_labels,
+                textposition="outside",
+                textfont=dict(size=10, color="#222222"),
+                legendgroup=metric_name,
+                showlegend=(pi == 1),
+                hovertemplate=(
+                    f"%{{x}} · {metric_name} = %{{customdata:.1f}}%<extra></extra>"
+                ),
+                row=1,
+                col=pi,
             )
 
-    # Light separator lines between rows that belong to *different*
-    # Python versions, so the eye groups "pychd @ 3.8 / uncompyle6 /
-    # decompyle3" as one block, "pychd @ 3.10 / pycdc" as another,
-    # etc. (codex review fix #9 — split the two storylines visually.)
-    shapes = []
-    for i in range(1, len(rows)):
-        prev_version = rows[i - 1][1]
-        cur_version = rows[i][1]
-        if prev_version != cur_version:
-            shapes.append(
-                dict(
-                    type="line",
-                    xref="paper",
-                    yref="y",
-                    x0=0,
-                    x1=1,
-                    y0=i - 0.5,
-                    y1=i - 0.5,
-                    line=dict(color="#222222", width=2),
-                )
-            )
-
+    # Y-axis label: "Score (0-100)" instead of "Rate (%)" — Edit
+    # similarity is a Ratcliff-Obershelp ratio rescaled into [0, 100],
+    # not literally a rate, and the previous label conflated the two
+    # (codex review #1 — semantic muddiness).
+    fig.update_yaxes(range=[0, 105], title="Score (0-100)", row=1, col=1)
+    fig.update_xaxes(title="")
     fig.update_layout(
-        title="Each tool at its preferred Python version",
+        title=(
+            "Each tool at its preferred Python version"
+            " — pychd vs competitors, side by side"
+        ),
         template=PLOTLY_TEMPLATE,
-        # No xaxis title: column headers already say "Metric".
-        xaxis=dict(title="", side="top", tickfont=dict(size=12)),
-        # Plotly heatmaps place y=0 at the bottom by default, so the
-        # natural reading order (top = first row in the data) requires
-        # an explicit reversal of the auto-range.
-        yaxis=dict(title="", autorange="reversed", tickfont=dict(size=12)),
-        annotations=annotations,
-        shapes=shapes,
-        margin=dict(l=180, r=20, t=90, b=40),
-        height=440,
+        barmode="group",
+        legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center"),
+        margin=dict(l=60, r=20, t=80, b=120),
+        height=480,
     )
-    return _write(fig, "comparison_decompilers", png=png, height=440)
+    return _write(fig, "comparison_decompilers", png=png, height=480)
 
 
 def main(argv: list[str] | None = None) -> int:
