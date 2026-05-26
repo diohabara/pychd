@@ -888,11 +888,14 @@ class _Context:
             # stack — guess the type from the trailing MAP/LIST/SET
             # opcode so the assign at least carries a same-shape RHS.
             kind_hint = self._guess_comprehension_kind()
-            placeholder = {
+            placeholder_map = {
                 "list": "[]",
                 "set": "set()",
                 "dict": "{}",
-            }.get(kind_hint, "...")
+            }
+            placeholder = (
+                placeholder_map[kind_hint] if kind_hint in placeholder_map else "..."
+            )
             self.body.append(ir.Assign(target=target, value=placeholder))
             self._consume(1)
             self.pos += 1

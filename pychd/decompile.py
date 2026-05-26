@@ -729,7 +729,9 @@ def decompile_pyc(
 
     if mode == Mode.HYBRID_REWRITE:
         if model is None and backend != Backend.CODEX:
-            raise ValueError("hybrid-rewrite mode requires a model with the litellm backend")
+            raise ValueError(
+                "hybrid-rewrite mode requires a model with the litellm backend"
+            )
         rule_source = module.render()
         # If the rule pass already left no unknown bodies *and* the rule
         # output parses cleanly, skip the LLM call. Saves both wall-clock
