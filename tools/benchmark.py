@@ -188,6 +188,74 @@ def _count_functions(tree: ast.AST) -> int:
     )
 
 
+_FOLDABLE_BINOPS: dict[type, object] = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+    ast.FloorDiv: lambda a, b: a // b,
+    ast.Mod: lambda a, b: a % b,
+    ast.Pow: lambda a, b: a ** b,
+}
+
+
+def _fold_constants(tree: ast.AST) -> ast.AST:
+    """Recursively fold ``Constant`` ``BinOp`` ``Constant`` chains into
+    a single ``Constant``, matching the CPython compiler's own constant
+    folding pass.
+
+    Without this, ``x = 60 * 60 * 24`` in the original and ``x = 86400``
+    in the recovered source — which produce identical bytecode — show
+    up as different ASTs and fail ``strict_match``. The fold below is
+    symmetric across original and recovered so the comparison stays
+    structural rather than literal.
+
+    Skips division by zero and exceptions; the un-folded subtree is
+    kept verbatim in that case.
+    """
+
+    class Folder(ast.NodeTransformer):
+        def visit_BinOp(self, node):  # type: ignore[override]
+            node.left = self.visit(node.left)
+            node.right = self.visit(node.right)
+            if (
+                isinstance(node.left, ast.Constant)
+                and isinstance(node.right, ast.Constant)
+                and type(node.op) in _FOLDABLE_BINOPS
+            ):
+                try:
+                    value = _FOLDABLE_BINOPS[type(node.op)](
+                        node.left.value, node.right.value
+                    )
+                    return ast.copy_location(ast.Constant(value=value), node)
+                except Exception:
+                    return node
+            return node
+
+        def visit_UnaryOp(self, node):  # type: ignore[override]
+            node.operand = self.visit(node.operand)
+            if isinstance(node.operand, ast.Constant) and isinstance(
+                node.operand.value, (int, float, complex)
+            ):
+                if isinstance(node.op, ast.USub):
+                    return ast.copy_location(
+                        ast.Constant(value=-node.operand.value), node
+                    )
+                if isinstance(node.op, ast.UAdd):
+                    return ast.copy_location(
+                        ast.Constant(value=+node.operand.value), node
+                    )
+                if isinstance(node.op, ast.Invert) and isinstance(
+                    node.operand.value, int
+                ):
+                    return ast.copy_location(
+                        ast.Constant(value=~node.operand.value), node
+                    )
+            return node
+
+    return Folder().visit(tree)
+
+
 def _normalise_imports(tree: ast.AST) -> ast.AST:
     """Split multi-name ``import a, b`` / ``from x import a, b`` into
     individual single-name statements at every scope.
@@ -275,6 +343,10 @@ def _strip_for_skeleton(tree: ast.AST) -> ast.AST:
     # original source may use comma-list shorthand; the comma form
     # carries no extra information that survives compilation.
     cloned = _normalise_imports(cloned)
+    # Apply CPython's constant-folding so ``60 * 60 * 24`` matches the
+    # recovered ``86400``. Both sides go through the same pass so the
+    # comparison stays symmetric.
+    cloned = _fold_constants(cloned)
     for node in ast.walk(cloned):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             node.body = [ast.Pass()]
