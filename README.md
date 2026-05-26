@@ -165,8 +165,8 @@ pychd chooses the oracle, so the rule pass deliberately leaves an
 | Axis | Rule-only achieved | Hybrid-rewrite achieved | What the rule pass cannot reach without an oracle |
 |---|---|---|---|
 | `parses` | 100% | 100% | — |
-| `signature_match` | 99.8% | 100% | 0.2% rule-only residual: `if TYPE_CHECKING:`-guarded imports. `TYPE_CHECKING` is `False` at runtime but is a *name reference* in bytecode, so the compiler does not fold it away — the LOAD_GLOBAL + import survives and is recoverable. Hybrid-rewrite closes the gap. (`if False:` / `if 0:` blocks are genuinely erased by the constant folder and remain unrecoverable; the current corpora happen to contain none.) |
-| `declaration_match` | 99.6% | 99.8% | Same `if TYPE_CHECKING:` story. |
+| `signature_match` | 99.8% | 100% | 0.2 % rule-only residual: 2 CPython stdlib modules (`_colorize.py`, `_pylong.py`) whose source contains `if False:` / `if 0:` guards around `from typing import IO, Self, ClassVar` and a debug-only `def consumer(...)`. The constant folder genuinely erases those blocks from the bytecode (the README shows the `dis.dis` proof below), so there is *nothing* in the .pyc for any decompiler to recover. The 0.2 % → 0 % "improvement" from hybrid-rewrite is therefore **not decompilation** — the LLM is filling the gap from memorisation of CPython's source, which it has overwhelmingly seen at training time. See [§LLM contamination disclosure](#llm-contamination-disclosure); this is the concrete failure mode that section warns about. |
+| `declaration_match` | 99.6% | 99.8% | Same two modules; hybrid-rewrite recovers one declaration set by memorisation, leaves the other. |
 | `strict_match` | 36.0% | **93.2%** | CPython normalises docstrings via `inspect.cleandoc`, folds constants, and re-emits expressions in canonical form. The rewrite re-derives the canonical form from disassembly. |
 | `BS` (behavioral_smoke) | 42.1% | **68.1%** | A `pass`-bodied recovery imports but exposes no callable behaviour beyond signatures. |
 | `BX` (bytecode_exact) | 0.9% | 16.8% | Identical Python source compiles to different `co_consts` ordering across runs. |
@@ -1445,10 +1445,12 @@ If you reference pychd somewhere, here's the BibTeX:
             (a) Deterministic rule-only path: 99.8\%
             signature match (1215/1217), 99.6\% declaration match
             (1212/1217), 36.0\% strict-AST match (pre-improvements
-            baseline). The 0.2\% signature-match residual is
-            ``if TYPE\_CHECKING:''-guarded imports (recoverable in
-            principle — the bytecode references the name; future
-            work for the rule pass). (b) Hybrid-rewrite
+            baseline). The 0.2\% signature-match residual is two
+            stdlib modules whose source uses ``if False:'' / ``if 0:''
+            guards: CPython's constant folder erases those blocks,
+            so the bytecode contains nothing to recover. Hybrid-rewrite
+            closes the gap only by memorising the original source,
+            not by decompiling. (b) Hybrid-rewrite
             path (rule pass + one Codex CLI call per module, with the
             improved pychd rule pass and the AST-normalising
             strict\_match metric used by prior research): 93.2\%
