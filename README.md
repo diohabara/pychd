@@ -12,34 +12,31 @@ opcodes alone.
 
 ![Recovery rate by corpus — Sig / Decl / Strict / BN / BS](assets/recovery_by_corpus.svg)
 
-**Headline result — `hybrid-rewrite` mode, 1,228 modules, 514K LoC:**
+**Trustworthy headline — `rules-only` mode, 1,228 modules, 514K LoC** (deterministic, no LLM, fully reproducible offline):
 
-| Metric | Score |
-|---|---:|
-| **Strict AST match** | **1144/1228 (93.2%)** |
-| **Pass@1 (HumanEval re-executability)** | **160/164 (97.6%)** |
-| Behavioral smoke (import + public API) | 836/1228 (68.1%) |
-| Bytecode-normalised round-trip | 600/1228 (48.9%) |
-| Parses as valid Python 3.14 | 1228/1228 (100.0%) |
-| Edit similarity (mean) | 0.753 |
+| Metric | Score | What it measures |
+|---|---:|---|
+| `parses` (`ast.parse` succeeds) | 1228/1228 (100.0%) | Recovered source is syntactically valid |
+| `signature_match` | 1226/1228 (99.8%) | Every class/function/import name in the original appears in the recovered tree |
+| `declaration_match` | 1222/1228 (99.6%) | Same plus every module/class-level variable and annotation |
+| `strict_match` | 438/1217 (36.0%) | Full stripped-AST equality (bodies → `pass`, decorators / annotations dropped) |
+| `BS` (behavioral_smoke) | 514/1217 (42.1%) | Recovered module imports under the producing interpreter, public API matches |
+
+The 2 modules that fail `signature_match` (CPython's `_colorize.py` and `_pylong.py`) contain `if False:` / `if 0:` guards around imports and dead-code defs that the constant folder erases at compile time. **No decompiler — pychd or otherwise — can recover them from bytecode.** They are an inherent ceiling, not a pychd defect.
+
+> ### Hybrid-rewrite headline numbers are not in the trustworthy block above. Read this first.
+>
+> The "1144/1228 (93.2%) strict_match" / "160/164 (97.6%) Pass@1 on HumanEval" numbers you may have seen in older revisions of this README are **upper bounds under unmeasured contamination**, not decompilation skill. Concretely:
+>
+> - The `synthetic` corpus was *drafted with LLM assistance during this project's development*, so it is not an LLM-naïve control.
+> - The headline corpus (CPython stdlib, top-20 PyPI packages, OpenAI HumanEval) is overwhelmingly inside any modern frontier model's training data. The Pass@1 97.6 % on HumanEval is almost certainly the LLM recalling published HumanEval *solutions* rather than pychd decompiling correctly.
+> - The 0.2 % `signature_match` gap between rule-only and hybrid-rewrite is closed by the LLM injecting `from typing import IO, Self, ClassVar` lines into modules where the bytecode contains literally zero trace of those imports (see [§LLM contamination disclosure](#llm-contamination-disclosure) for the worked example on `_colorize.py`). That is memorisation, not recovery.
+>
+> Treat hybrid-rewrite as an **interesting upper bound**: it shows the *path* (rule pass + module-level LLM rewrite) produces parseable, AST-comparable output end-to-end, and confirms the rule pass + bytecode signal is enough to anchor the LLM. It does **not** show pychd is decompiling at 93 % strict-match on bytecode-only signal — the LLM is supplying source-level priors we can't currently subtract out. See [§LLM contamination disclosure](#llm-contamination-disclosure) for the full audit.
 
 See [§Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers) for the broader 23-module stdlib + PyPI head-to-head.
 
 ![Per-tool comparison at each decompiler's preferred Python version](assets/comparison_decompilers.svg)
-
-> **Treat every number on this page as potentially contaminated.**
-> The headline corpus (CPython stdlib, top-20 PyPI packages,
-> HumanEval) is overwhelmingly in any modern frontier model's training
-> data. The smaller `synthetic` corpus included below was *itself
-> written by an LLM during this project's development*, so it can't
-> honestly be called LLM-naïve either — at best it's "the exact
-> string never appeared in pre-2026 training data", which is a much
-> weaker claim than uncontaminated. We report scores as evidence
-> pychd's hybrid-rewrite **path** works end-to-end on bytecode → source
-> recovery, not as proof the LLM is generalising over genuinely
-> unseen distributions. A truly contamination-free evaluation would
-> require a privately-written, never-published corpus, which this
-> repository does not currently ship.
 
 ## Quick start
 
@@ -54,6 +51,10 @@ pychd decompile path/to/module.pyc --rules-only
 `codex login` session — set ``model = "gpt-5.5"`` in
 ``~/.codex/config.toml`` (or pass ``-c model=...``) to control which
 model. No extra API key needed.
+
+If you want a fully offline, deterministic, audit-friendly run with
+no LLM calls and no contamination risk, use `--rules-only` — that is
+the path whose numbers the headline table above reports.
 
 ## Table of contents
 
@@ -98,21 +99,58 @@ generalisation.
   training data; we report Pass@1 there as a re-executability sanity
   check, not as evidence of generalisation.
 
-What this means for the headline numbers:
+### Per-metric trust table
 
-- The 100 % `signature_match` / `declaration_match` numbers reflect
-  pychd's deterministic **rule pass**, which is bytecode-driven and
-  unaffected by LLM memorisation. Those are honest.
-- The `strict_match` / `BS` / `FC` gains on top of rules-only come
-  from the hybrid-rewrite path, where the LLM may be filling in
-  bodies from memory rather than from the bytecode signal we hand
-  it. We can't separate the two with the current methodology.
+| Metric | Rule-only | Hybrid-rewrite | Trust |
+|---|---|---|---|
+| `parses` | 100 % | 100 % | ✓ honest — just `ast.parse` |
+| `signature_match` (rule-only) | 99.8 % | — | ✓ honest — bytecode-derived |
+| `declaration_match` (rule-only) | 99.6 % | — | ✓ honest — bytecode-derived |
+| `signature_match` (hybrid Δ +0.2 pt) | — | 100 % | ✗ memorisation — see worked example below |
+| `strict_match` (rule-only) | 36.0 % | — | ✓ honest — bytecode-derived |
+| `strict_match` (hybrid Δ +57 pt) | — | 93.2 % | ⚠ unmeasured mix of memorisation + canonical-form derivation |
+| `BS` (rule-only) | 42.1 % | — | ✓ honest |
+| `BS` (hybrid Δ +26 pt) | — | 68.1 % | ⚠ contamination plausible |
+| `BN` (rule-only) | 7.2 % | — | ✓ honest |
+| `BN` (hybrid Δ +42 pt) | — | 48.9 % | ⚠ contamination plausible — body recovery from memory yields exact bytecode |
+| **`FC` Pass@1 (HumanEval)** | 2.4 % | 97.6 % | ✗ HumanEval is published, almost certainly memorised by the backend model. This metric measures "LLM solves HumanEval", not "pychd decompiles" |
+| Edit similarity | 0.445 | 0.753 | ⚠ memorisation pushes this towards 1.0 by construction |
 
-A clean contamination-free evaluation would require a privately
-authored, never-published corpus that no LLM has ever touched at any
-stage. This repository does not currently provide one. If you need
-that bound for your own use, please carry it out on code you control
-and report back — we will link the results here.
+### Worked example: `Lib/_colorize.py`
+
+The two CPython stdlib modules that fail rule-only `signature_match`
+(`_colorize.py`, `_pylong.py`) contain `if False:` / `if 0:` guards.
+For `_colorize.py` L8-12:
+
+```python
+# types
+if False:
+    from typing import IO, Self, ClassVar
+    _theme: Theme
+```
+
+CPython's constant folder erases the `if False:` block entirely.
+After `compile()` the bytecode contains zero `IMPORT_NAME typing`,
+zero `STORE_NAME IO`, etc. — the only survivor is `_theme: Theme`
+as a PEP 749 lazy annotation in the `__annotate__` closure.
+
+Pychd's rule pass correctly leaves those imports out of the
+recovered tree (you cannot decompile what isn't there). Hybrid-
+rewrite "fixes" the signature_match score by writing
+`from typing import IO, Self, ClassVar` into the output anyway —
+necessarily from training-data memorisation of CPython, since the
+.pyc carries no information about that line. That is the concrete
+mechanism behind the 0.2 pt sig-match gain, and the same kind of
+mechanism is plausibly contributing to the much larger strict-
+match / BN / Pass@1 gains.
+
+### What we don't currently measure
+
+A truly contamination-free evaluation would need a privately
+authored, never-published corpus that no LLM has touched at any
+stage of training. This repository does not ship one. If you carry
+out that evaluation on code you control, please open an issue with
+the results and we will link them here.
 
 ## Pipeline at a glance
 
