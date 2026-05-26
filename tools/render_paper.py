@@ -287,19 +287,14 @@ def render(
         "",
         "Bars = signature match · declaration match · strict match per corpus.",
         "",
-        "![Rule-pass coverage across CPython 3.6 – 3.14](assets/version_coverage.svg)",
-        "",
-        "One cell per CPython minor release. Colour = which rule pass"
-        " handles it: **blue** = cross-version walker (3.6 – 3.13,"
-        " declaration-level via xdis), **green** = native walker (3.14,"
-        ' full-fidelity). The strip avoids the "height encodes'
-        ' irrelevant information" pitfall (Wilke, *Fundamentals of Data'
-        " Visualization* §19): readers care which releases pychd handles,"
-        " not how many micro-release bytecode bumps CPython shipped. The"
-        " chart is limited to 3.6+ since 3.0 – 3.5 are EOL; pychd still"
-        " recognises their magic numbers (see"
-        " [Cross-version support](#cross-version-support) below), but"
-        " no current build target compiles bytecode against them.",
+        "Rule-pass coverage is documented as a table in"
+        " [§Cross-version support](#cross-version-support) below — every"
+        " minor 3.0–3.14 with its rule-pass type, latest magic number,"
+        " and notable bytecode change. The previous strip figure"
+        " conveyed strictly less information than that table and was"
+        " dropped per codex review (Wilke, *Fundamentals of Data"
+        " Visualization* — if it can be a sentence, it should be a"
+        " sentence).",
     ]
 
     # Failure attribution

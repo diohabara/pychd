@@ -311,75 +311,20 @@ def render_paper_axes_by_corpus(
     return _write(fig, "paper_axes_by_corpus", png=png)
 
 
-def render_version_coverage(*, png: bool = False) -> Path:
-    """Categorical strip of which rule pass each Python minor uses.
+def render_version_coverage(*, png: bool = False) -> Path | None:
+    """Intentionally a no-op.
 
-    The previous bar-chart variant encoded "magic-number revisions per
-    minor" as bar height, which is exactly the kind of irrelevant-
-    information encoding Wilke's *Fundamentals of Data Visualization*
-    (Ch. 19) warns against: readers care which Python releases pychd
-    handles, not how many micro-release bytecode bumps CPython shipped.
-    A single-row categorical strip (rectangles with one cell per minor,
-    coloured by rule-pass type, with the minor printed inside) carries
-    the same information without the misleading height channel.
+    The textual table in README §Cross-version support already lists
+    every minor with its rule-pass type, latest magic number, and
+    bytecode-change note. A single-row strip showing the same
+    information reduces to a sentence ("3.6 – 3.13 use cross-version,
+    3.14 uses native"), which is the Wilke-canonical case for *not*
+    having a figure (codex review fix #2; Wilke, *Fundamentals of
+    Data Visualization* — balance data and context). Kept as a stub
+    so existing callers don't break.
     """
-    from pychd.versions import KNOWN_VERSIONS, rule_pass_for
-
-    minors = sorted(
-        {info.version for info in KNOWN_VERSIONS.values()}
-        & {(3, m) for m in range(6, 15)}
-    )
-    labels = [f"3.{m[1]}" for m in minors]
-    passes = [rule_pass_for(m) for m in minors]
-
-    pass_to_index = {"cross-version": 0, "native": 1, "llm-only": 2}
-    z = [[pass_to_index[p] for p in passes]]
-    cell_text = [[f"<b>{lbl}</b><br>{p}" for lbl, p in zip(labels, passes)]]
-
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=z,
-            x=labels,
-            y=["rule pass"],
-            text=cell_text,
-            texttemplate="%{text}",
-            textfont=dict(size=12, color="white"),
-            colorscale=[
-                [0.0, COLOR_SIGNATURE],  # cross-version → blue
-                [0.5, COLOR_DECLARATION],  # native → green
-                [1.0, COLOR_NEUTRAL],  # llm-only (unused) → grey
-            ],
-            zmin=0,
-            zmax=2,
-            showscale=False,
-            xgap=2,
-            ygap=0,
-            hovertemplate="Python %{x} — %{text}<extra></extra>",
-        )
-    )
-    # Legend proxies for the two encodings actually present.
-    for label, color in [
-        ("Cross-version rule pass (3.6 – 3.13)", COLOR_SIGNATURE),
-        ("Native rule pass (3.14)", COLOR_DECLARATION),
-    ]:
-        fig.add_scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            marker=dict(size=14, color=color, symbol="square"),
-            name=label,
-            showlegend=True,
-        )
-    fig.update_layout(
-        title="Rule-pass coverage across CPython 3.6 – 3.14",
-        template=PLOTLY_TEMPLATE,
-        xaxis=dict(showticklabels=False, ticks="", showgrid=False, zeroline=False),
-        yaxis=dict(showticklabels=False, ticks="", showgrid=False, zeroline=False),
-        legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
-        margin=dict(l=40, r=40, t=70, b=80),
-        height=220,
-    )
-    return _write(fig, "version_coverage", png=png, height=220)
+    _ = png  # silence unused-arg lint
+    return None
 
 
 def render_comparative_benchmark(
@@ -434,10 +379,10 @@ def render_comparative_benchmark(
         ("Signature", "signature_match"),
         ("Declaration", "declaration_match"),
         ("Strict", "strict_match"),
-        ("BX", "bytecode_exact"),
-        ("BN", "bytecode_normalized"),
-        ("BS", "behavioral_smoke"),
-        ("ED ×100", "edit_similarity_sum"),
+        ("Bytecode<br>exact", "bytecode_exact"),
+        ("Bytecode<br>norm.", "bytecode_normalized"),
+        ("Behavioral<br>smoke", "behavioral_smoke"),
+        ("Edit<br>sim. ×100", "edit_similarity_sum"),
     ]
     col_labels = [m[0] for m in metric_specs]
 
@@ -448,31 +393,29 @@ def render_comparative_benchmark(
         return 100 * data.get(key, 0) / n
 
     z: list[list[float]] = []
-    text: list[list[str]] = []
     for _, _, data in rows:
-        z_row: list[float] = []
-        t_row: list[str] = []
-        for _, key in metric_specs:
-            v = cell_value(data, key)
-            z_row.append(v)
-            t_row.append(f"{v:.0f}")
-        z.append(z_row)
-        text.append(t_row)
+        z.append([cell_value(data, key) for _, key in metric_specs])
 
-    # Sequential single-hue scale (perceptually uniform, monotonic) —
-    # Wilke Ch. 4: ordered data deserves an ordered colour scale. Light
-    # cells stand for low scores, dark cells for high. Annotations are
-    # drawn in two colours so they stay legible on both ends of the
-    # ramp (white on dark, near-black on light).
+    # Sequential single-hue scale with a non-white floor — codex
+    # review fix #6: the default Blues ramp makes 0 % cells visually
+    # indistinguishable from "missing data" / page background, which
+    # is the very confusion Wilke (§19) warns against. We anchor the
+    # low end at a light blue-grey so 0 % is still clearly "a cell
+    # with a score" rather than absence.
+    colorscale = [
+        [0.00, "#dde5ee"],
+        [0.25, "#a8c1da"],
+        [0.50, "#6e96bf"],
+        [0.75, "#3a6da3"],
+        [1.00, "#0d3b66"],
+    ]
+
     fig = go.Figure(
         data=go.Heatmap(
             z=z,
             x=col_labels,
             y=row_labels,
-            text=text,
-            texttemplate="%{text}",
-            textfont=dict(size=12),
-            colorscale="Blues",
+            colorscale=colorscale,
             zmin=0,
             zmax=100,
             colorbar=dict(
@@ -486,18 +429,64 @@ def render_comparative_benchmark(
         )
     )
 
+    # Per-cell annotations with luminance-based text colour (codex
+    # review fix #7). Threshold derived empirically from the
+    # colorscale above: cells above ~55 % land on a navy where
+    # near-white text reads clearly; below that, dark text on the
+    # pale-blue floor reads better.
+    annotations = []
+    for ri, row in enumerate(z):
+        for ci, value in enumerate(row):
+            annotations.append(
+                dict(
+                    x=col_labels[ci],
+                    y=row_labels[ri],
+                    text=f"{value:.0f}",
+                    showarrow=False,
+                    font=dict(
+                        size=13,
+                        color="#f8f9fb" if value >= 55 else "#1a1a1a",
+                    ),
+                )
+            )
+
+    # Light separator lines between rows that belong to *different*
+    # Python versions, so the eye groups "pychd @ 3.8 / uncompyle6 /
+    # decompyle3" as one block, "pychd @ 3.10 / pycdc" as another,
+    # etc. (codex review fix #9 — split the two storylines visually.)
+    shapes = []
+    for i in range(1, len(rows)):
+        prev_version = rows[i - 1][1]
+        cur_version = rows[i][1]
+        if prev_version != cur_version:
+            shapes.append(
+                dict(
+                    type="line",
+                    xref="paper",
+                    yref="y",
+                    x0=0,
+                    x1=1,
+                    y0=i - 0.5,
+                    y1=i - 0.5,
+                    line=dict(color="#222222", width=2),
+                )
+            )
+
     fig.update_layout(
         title="Each tool at its preferred Python version",
         template=PLOTLY_TEMPLATE,
-        xaxis=dict(title="Metric", side="top", tickfont=dict(size=12)),
+        # No xaxis title: column headers already say "Metric".
+        xaxis=dict(title="", side="top", tickfont=dict(size=12)),
         # Plotly heatmaps place y=0 at the bottom by default, so the
         # natural reading order (top = first row in the data) requires
         # an explicit reversal of the auto-range.
         yaxis=dict(title="", autorange="reversed", tickfont=dict(size=12)),
-        margin=dict(l=180, r=20, t=110, b=40),
-        height=420,
+        annotations=annotations,
+        shapes=shapes,
+        margin=dict(l=180, r=20, t=90, b=40),
+        height=440,
     )
-    return _write(fig, "comparison_decompilers", png=png, height=420)
+    return _write(fig, "comparison_decompilers", png=png, height=440)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -517,7 +506,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--png", action="store_true", help="Also emit PNG variants.")
     args = ap.parse_args(argv)
 
-    written: list[Path] = [render_version_coverage(png=args.png)]
+    written: list[Path] = []
+    if (vc := render_version_coverage(png=args.png)) is not None:
+        written.append(vc)
     if args.results_json.exists():
         raw = json.loads(args.results_json.read_text())
         written.append(render_per_corpus_recovery(raw["corpora"], png=args.png))
