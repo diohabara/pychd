@@ -50,11 +50,18 @@ ASSET_DIR = REPO_ROOT / "assets"
 
 # Brand-consistent palette. Three hues distinguish the three tiers of
 # the match metric (signature / declaration / strict); a neutral grey
-# is reserved for "out of scope" bars in comparative charts.
+# is reserved for "out of scope" bars in comparative charts. The
+# semantic-axis chart uses three orthogonal hues so it reads as a
+# distinct chart family.
 COLOR_SIGNATURE = "#1f77b4"  # blue
 COLOR_DECLARATION = "#2ca02c"  # green
 COLOR_STRICT = "#d62728"  # red
 COLOR_NEUTRAL = "#999999"
+COLOR_BX = "#9467bd"  # purple — bytecode_exact
+COLOR_BN = "#ff7f0e"  # orange — bytecode_normalized
+COLOR_BS = "#17becf"  # cyan — behavioral_smoke
+COLOR_FC = "#e377c2"  # pink — functional_correctness (Pass@1)
+COLOR_ED = "#8c564b"  # brown — edit_similarity
 
 PLOTLY_TEMPLATE = "plotly_white"
 
@@ -123,6 +130,131 @@ def render_per_corpus_recovery(
     return _write(fig, "recovery_by_corpus", png=png)
 
 
+def render_semantic_by_corpus(
+    results: dict[str, dict[str, Any]],
+    *,
+    png: bool = False,
+) -> Path:
+    """Bar chart: bytecode_exact / bytecode_normalized / behavioral_smoke per corpus.
+
+    Companion to :func:`render_per_corpus_recovery` — that one shows
+    the static AST axes (signature / declaration / strict). This one
+    shows the semantic axes, which answer the *other* question: how
+    close is the recovered source to the original *after* the compiler
+    is done with it?
+    """
+    corpora = list(results.keys())
+    bx = [
+        100 * results[c].get("bytecode_exact", 0) / max(1, results[c]["modules"])
+        for c in corpora
+    ]
+    bn = [
+        100 * results[c].get("bytecode_normalized", 0) / max(1, results[c]["modules"])
+        for c in corpora
+    ]
+    bs = [
+        100 * results[c].get("behavioral_smoke", 0) / max(1, results[c]["modules"])
+        for c in corpora
+    ]
+
+    fig = go.Figure()
+    fig.add_bar(
+        name="bytecode_exact (BX)",
+        x=corpora,
+        y=bx,
+        marker_color=COLOR_BX,
+        hovertemplate="%{y:.1f}%<extra>marshal payload identical</extra>",
+    )
+    fig.add_bar(
+        name="bytecode_normalized (BN)",
+        x=corpora,
+        y=bn,
+        marker_color=COLOR_BN,
+        hovertemplate="%{y:.1f}%<extra>canonical instruction stream</extra>",
+    )
+    fig.add_bar(
+        name="behavioral_smoke (BS)",
+        x=corpora,
+        y=bs,
+        marker_color=COLOR_BS,
+        hovertemplate="%{y:.1f}%<extra>import + public surface</extra>",
+    )
+    fig.update_layout(
+        title="Semantic equivalence rate by corpus (rule-only, no LLM)",
+        template=PLOTLY_TEMPLATE,
+        barmode="group",
+        yaxis=dict(title="Rate (%)", range=[0, 105]),
+        xaxis=dict(title="Corpus"),
+        legend=dict(orientation="h", y=-0.15),
+        margin=dict(l=60, r=20, t=80, b=80),
+    )
+    return _write(fig, "semantic_by_corpus", png=png)
+
+
+def render_paper_axes_by_corpus(
+    results: dict[str, dict[str, Any]],
+    *,
+    png: bool = False,
+) -> Path:
+    """Paper-aligned axes: Pass@1 + mean Edit Similarity per corpus.
+
+    Reports the two metrics that align pychd's evaluation with
+    Decompile-Bench (arXiv 2505.12668) and PyLingual
+    (USENIX Security 2025). Pass@1 appears only for corpora that ship
+    a ``_tests.json`` oracle — currently HumanEval; other corpora show
+    a hollow bar to make the gap explicit.
+
+    Edit Similarity is rescaled to a percentage (mean ratio × 100) so
+    both metrics share the same y-axis.
+    """
+    corpora = list(results.keys())
+    fc_rate: list[float | None] = []
+    for c in corpora:
+        d = results[c]
+        total = d.get("functional_total", 0)
+        if total <= 0:
+            fc_rate.append(None)
+        else:
+            fc_rate.append(100 * d.get("functional_correctness", 0) / total)
+    edit_pct = [100 * results[c].get("edit_similarity", 0.0) for c in corpora]
+
+    fig = go.Figure()
+    fig.add_bar(
+        name="Pass@1 (functional_correctness)",
+        x=corpora,
+        y=[v if v is not None else 0 for v in fc_rate],
+        marker_color=COLOR_FC,
+        # Highlight n/a bars by hatching via opacity.
+        marker_opacity=[1.0 if v is not None else 0.2 for v in fc_rate],
+        hovertemplate=(
+            "%{y:.1f}%<extra>Pass@1 — recovered module passes the "
+            "original check()</extra>"
+        ),
+    )
+    fig.add_bar(
+        name="Edit Similarity (mean × 100)",
+        x=corpora,
+        y=edit_pct,
+        marker_color=COLOR_ED,
+        hovertemplate=(
+            "%{y:.1f}<extra>character-level Ratcliff-Obershelp ratio × 100</extra>"
+        ),
+    )
+    fig.update_layout(
+        title=(
+            "Paper-aligned axes by corpus — Pass@1 (Decompile-Bench)"
+            " and Edit Similarity"
+        ),
+        template=PLOTLY_TEMPLATE,
+        barmode="group",
+        yaxis=dict(title="Rate / similarity (%)", range=[0, 105]),
+        xaxis=dict(title="Corpus"),
+        legend=dict(orientation="h", y=-0.15),
+        margin=dict(l=60, r=20, t=80, b=80),
+    )
+    return _write(fig, "paper_axes_by_corpus", png=png)
+
+
 def render_version_coverage(*, png: bool = False) -> Path:
     """Stacked bar showing rule-pass coverage per Python minor release."""
     from pychd.versions import KNOWN_VERSIONS, rule_pass_for
@@ -175,50 +307,112 @@ def render_comparative_benchmark(
     *,
     png: bool = False,
 ) -> Path:
-    """Bar chart comparing pychd to other Python decompilers on a shared corpus."""
-    tools = list(comparison.keys())
-    sig = [
-        100 * comparison[t]["signature_match"] / max(1, comparison[t]["modules"])
-        for t in tools
-    ]
-    decl = [
-        100 * comparison[t]["declaration_match"] / max(1, comparison[t]["modules"])
-        for t in tools
-    ]
-    parses = [
-        100 * comparison[t]["parses"] / max(1, comparison[t]["modules"]) for t in tools
-    ]
+    """Bar chart comparing pychd to other Python decompilers on a shared corpus.
+
+    Renders all eight axes side-by-side: three static (declaration AST
+    shape), three semantic (bytecode + runtime), Pass@1, and edit
+    similarity. Tools that were skipped at run time (image not built /
+    binary missing) are omitted entirely — drawing them as a zero
+    column would imply they failed every axis, which isn't true.
+    """
+    # Drop tools that produced no scoring rows (skipped due to missing
+    # binary / image). They appear in the run's JSON for bookkeeping
+    # but plotting them flat at 0 is misleading.
+    tools = [t for t in comparison if comparison[t].get("modules", 0) > 0]
+    if not tools:
+        # Nothing to compare; write an empty placeholder so the README
+        # still has a valid <img> target.
+        fig = go.Figure()
+        fig.update_layout(title="No comparison data — run tools/compare_decompilers.py")
+        return _write(fig, "comparison_decompilers", png=png)
+
+    def rate(t: str, key: str) -> float:
+        return 100 * comparison[t].get(key, 0) / max(1, comparison[t]["modules"])
 
     fig = go.Figure()
     fig.add_bar(
         name="Output parses",
         x=tools,
-        y=parses,
+        y=[rate(t, "parses") for t in tools],
         marker_color="#bbbbbb",
         hovertemplate="%{y:.1f}%<extra>output parses</extra>",
     )
     fig.add_bar(
         name="Signature match",
         x=tools,
-        y=sig,
+        y=[rate(t, "signature_match") for t in tools],
         marker_color=COLOR_SIGNATURE,
         hovertemplate="%{y:.1f}%<extra>signature match</extra>",
     )
     fig.add_bar(
         name="Declaration match",
         x=tools,
-        y=decl,
+        y=[rate(t, "declaration_match") for t in tools],
         marker_color=COLOR_DECLARATION,
         hovertemplate="%{y:.1f}%<extra>declaration match</extra>",
     )
+    fig.add_bar(
+        name="bytecode_exact",
+        x=tools,
+        y=[rate(t, "bytecode_exact") for t in tools],
+        marker_color=COLOR_BX,
+        hovertemplate="%{y:.1f}%<extra>marshal payload identical</extra>",
+    )
+    fig.add_bar(
+        name="bytecode_normalized",
+        x=tools,
+        y=[rate(t, "bytecode_normalized") for t in tools],
+        marker_color=COLOR_BN,
+        hovertemplate="%{y:.1f}%<extra>canonical instruction stream</extra>",
+    )
+    fig.add_bar(
+        name="behavioral_smoke",
+        x=tools,
+        y=[rate(t, "behavioral_smoke") for t in tools],
+        marker_color=COLOR_BS,
+        hovertemplate="%{y:.1f}%<extra>import + public surface</extra>",
+    )
+
+    # Paper-aligned axes. FC may be n/a (no oracle) — show as 0 with
+    # reduced opacity; ED is always defined and rescaled to a percentage.
+    def fc_rate(t: str) -> tuple[float, float]:
+        total = comparison[t].get("functional_total", 0)
+        passes = comparison[t].get("functional_correctness", 0)
+        return (100 * passes / max(1, total), total)
+
+    fc_values = [fc_rate(t) for t in tools]
+    fig.add_bar(
+        name="Pass@1 (FC)",
+        x=tools,
+        y=[v[0] for v in fc_values],
+        marker_color=COLOR_FC,
+        marker_opacity=[1.0 if v[1] > 0 else 0.2 for v in fc_values],
+        hovertemplate=("%{y:.1f}%<extra>Pass@1 — n/a where no oracle</extra>"),
+    )
+    fig.add_bar(
+        name="Edit Similarity (×100)",
+        x=tools,
+        y=[
+            100
+            * comparison[t].get("edit_similarity_sum", 0.0)
+            / max(1, comparison[t]["modules"])
+            for t in tools
+        ],
+        marker_color=COLOR_ED,
+        hovertemplate="%{y:.1f}<extra>mean Ratcliff-Obershelp ratio × 100</extra>",
+    )
+
     fig.update_layout(
-        title="pychd vs. uncompyle6 / decompyle3 on a shared Python 3.8 corpus",
+        title=(
+            "pychd vs. uncompyle6 / decompyle3 on a shared Python 3.8 corpus"
+            " — eight-axis comparison"
+        ),
         template=PLOTLY_TEMPLATE,
         barmode="group",
         yaxis=dict(title="Rate (%)", range=[0, 105]),
         xaxis=dict(title="Decompiler"),
-        legend=dict(orientation="h", y=-0.15),
-        margin=dict(l=60, r=20, t=80, b=80),
+        legend=dict(orientation="h", y=-0.2),
+        margin=dict(l=60, r=20, t=80, b=100),
     )
     return _write(fig, "comparison_decompilers", png=png)
 
@@ -244,8 +438,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.results_json.exists():
         raw = json.loads(args.results_json.read_text())
         written.append(render_per_corpus_recovery(raw["corpora"], png=args.png))
+        written.append(render_semantic_by_corpus(raw["corpora"], png=args.png))
+        written.append(render_paper_axes_by_corpus(raw["corpora"], png=args.png))
     if args.comparison_json.exists():
         cmp = json.loads(args.comparison_json.read_text())
+        # New versioned schema wraps per-version dicts under "versions";
+        # render the most-supported version (lowest minor present) as
+        # the canonical comparison chart so the README's single image
+        # still makes sense at a glance.
+        if isinstance(cmp, dict) and "versions" in cmp and cmp["versions"]:
+            versions = sorted(
+                cmp["versions"].keys(),
+                key=lambda s: tuple(map(int, s.split("."))),
+            )
+            # The lowest minor is also the broadest tool overlap —
+            # uncompyle6, decompyle3, and pycdc all read 3.8 .pyc but
+            # only pychd + pylingual cover 3.9+.
+            cmp = cmp["versions"][versions[0]]
         written.append(render_comparative_benchmark(cmp, png=args.png))
     for w in written:
         print(f"wrote {w.relative_to(REPO_ROOT)}")

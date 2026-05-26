@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from pychd.decompile import (
+    Backend,
     Mode,
     decompile,
     decompile_disassembled_pyc,
@@ -77,18 +78,30 @@ class TestRulesOnlyDecompile:
 
 class TestHybridDecompile:
     def test_hybrid_invokes_llm_only_for_unknown_bodies(self):
+        # Bodies the rule pass cannot recover: a for-loop and a
+        # multi-statement function. Trivial bodies (``return a + b``)
+        # would now be picked up by the simple-body matcher and bypass
+        # the LLM entirely — the assertion below pins the *unknown
+        # body count* to exactly the irreducible cases.
         src = '''"""Doc."""
 from typing import Any
 
 X = 1
 
 
-def foo(a, b):
-    return a + b
+def foo(items):
+    total = 0
+    for x in items:
+        total += x
+    return total
 
 
-def bar(x):
-    return x * 2
+def bar(xs):
+    out = []
+    for x in xs:
+        if x > 0:
+            out.append(x)
+    return out
 '''
         with tempfile.TemporaryDirectory() as tmp:
             py_path = Path(tmp) / "src.py"
@@ -96,12 +109,12 @@ def bar(x):
             pyc = Path(tmp) / "out.pyc"
             py_compile.compile(str(py_path), cfile=str(pyc))
             mock_response = MagicMock()
-            mock_response.choices[0].message.content = "    return a + b"
+            mock_response.choices[0].message.content = "    return 0"
             with patch(
                 "pychd.decompile.completion", return_value=mock_response
             ) as mock_completion:
                 report = decompile_pyc(pyc, mode=Mode.HYBRID, model="gpt-4")
-                # Exactly two function bodies → exactly two LLM calls.
+                # Exactly two non-trivial bodies → exactly two LLM calls.
                 assert mock_completion.call_count == 2
                 assert report.llm_calls == 2
             # Result still parses.
@@ -126,6 +139,48 @@ __all__ = ["join", "exists"]
                 assert mock_completion.call_count == 0
                 assert report.llm_calls == 0
                 assert report.unknown_blocks == 0
+
+
+class TestCodexBackend:
+    """Codex CLI backend dispatch — verifies the subprocess invocation
+    contract without needing an actual codex login on the host."""
+
+    def test_hybrid_with_codex_backend_skips_litellm(self):
+        src = '''"""Doc."""
+def foo(a, b):
+    if a > b:
+        return a
+    else:
+        return b
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            py_path = Path(tmp) / "src.py"
+            py_path.write_text(src)
+            pyc = Path(tmp) / "out.pyc"
+            py_compile.compile(str(py_path), cfile=str(pyc))
+            # Patch the whole _codex_fill_body helper rather than the
+            # subprocess + open layer underneath — the latter would
+            # also intercept xdis' bytes-mode .pyc reads and explode.
+            with (
+                patch("pychd.decompile.completion") as mock_completion,
+                patch(
+                    "pychd.decompile._codex_fill_body",
+                    return_value="    return a if a > b else b",
+                ) as mock_codex,
+            ):
+                report = decompile_pyc(
+                    pyc, mode=Mode.HYBRID, model="gpt-4", backend=Backend.CODEX
+                )
+                # codex backend never reaches litellm.completion.
+                assert mock_completion.call_count == 0
+                # One unknown body → one codex subprocess call.
+                assert mock_codex.call_count == 1
+                assert report.llm_calls == 1
+
+    def test_backend_enum_values(self):
+        # Pin the CLI-visible values so changing them is intentional.
+        assert Backend.LITELLM.value == "litellm"
+        assert Backend.CODEX.value == "codex"
 
 
 class TestDirectoryDecompile:

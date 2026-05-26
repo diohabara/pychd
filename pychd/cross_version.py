@@ -968,12 +968,27 @@ def _build_function(
     is_generator = bool(flags & _CO_GENERATOR)
     args = _args_from_code(code, defaults=defaults, kwdefaults=kwdefaults)
     docstring = _extract_docstring(walker, code)
-    body: list[ir.Stmt] = [
-        ir.UnknownBlock(
-            disassembly=_dis_text(code, walker.version_tuple),
-            signature=f"def {name}",
-        )
-    ]
+
+    # Try the cross-version body matcher before falling back to an
+    # UnknownBlock placeholder. This unlocks BN / BS / ED / FC on the
+    # comparison benchmark by handing over recovered source for the
+    # common shapes (``return name(.attr)*``, ``pass``, ``return
+    # <literal>``, ``return [literals]`` / ``{k: v}`` / ``(x, y)``,
+    # ``return X.method(args)``, simple binary ops) — the same set
+    # the native 3.14 walker has handled since the rule pass shipped.
+    trivial = _try_recover_trivial_body_xdis(
+        code, walker, has_docstring=docstring is not None
+    )
+    body: list[ir.Stmt]
+    if trivial is not None and not (is_async or is_generator):
+        body = [ir.RawStatement(source=trivial)]
+    else:
+        body = [
+            ir.UnknownBlock(
+                disassembly=_dis_text(code, walker.version_tuple),
+                signature=f"def {name}",
+            )
+        ]
     return ir.FunctionDef(
         name=name,
         args=args,
@@ -1052,6 +1067,531 @@ def _args_from_code(
         kwonly=kwonly_args,
         kwarg=kwarg,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-version trivial-body recovery
+# ---------------------------------------------------------------------------
+#
+# The native (3.14) walker has its own ``_try_recover_trivial_body`` in
+# ``pychd/rules.py`` that targets stdlib ``dis.Instruction`` objects.
+# Here we mirror the same recogniser against xdis instructions so the
+# cross-version pass can recover the same family of closed-form bodies
+# on every CPython 3.x release rather than falling straight through to
+# ``UnknownBlock``.
+#
+# Each recognised shape lifts the BN / BS / ED / FC scores against
+# competing decompilers because:
+#
+# * BN compares de-specialised instruction streams — recovered source
+#   that round-trips to identical opcodes lines up.
+# * BS imports the recovered module and checks its public surface —
+#   ``pass`` bodies break sub-classing because ``object.__init__``
+#   semantics aren't preserved for ``__init__`` etc.
+# * ED is character-similarity; even partially-recovered bodies
+#   massively dominate ``pass`` for textual overlap.
+# * FC (Pass@1) demands the recovered function *return* the original
+#   value; the moment a real expression replaces ``pass`` the test
+#   has a chance to pass.
+
+_TRIVIAL_PROLOGUE_XDIS = frozenset(
+    {
+        "RESUME",
+        "GEN_START",
+        "MAKE_CELL",
+        "COPY_FREE_VARS",
+        "CACHE",
+        "EXTENDED_ARG",
+        "NOT_TAKEN",
+        "NOP",
+        "PRECALL",
+        "RESERVED",
+        "PUSH_NULL",
+    }
+)
+
+_LOAD_NAME_OPS_XDIS = frozenset(
+    {"LOAD_FAST", "LOAD_FAST_BORROW", "LOAD_NAME", "LOAD_GLOBAL"}
+)
+_LOAD_CONST_OPS_XDIS = frozenset(
+    {"LOAD_CONST", "LOAD_SMALL_INT", "LOAD_COMMON_CONSTANT"}
+)
+
+# Binary-op opcodes by their CPython source-form mapping. Python 3.11+
+# folds these into ``BINARY_OP <index>``; pre-3.11 has one opcode per
+# operator. We translate both shapes uniformly back to the operator
+# symbol the source would have used.
+_BINARY_OPS_PRE_3_11 = {
+    "BINARY_ADD": "+",
+    "BINARY_SUBTRACT": "-",
+    "BINARY_MULTIPLY": "*",
+    "BINARY_TRUE_DIVIDE": "/",
+    "BINARY_FLOOR_DIVIDE": "//",
+    "BINARY_MODULO": "%",
+    "BINARY_POWER": "**",
+    "BINARY_LSHIFT": "<<",
+    "BINARY_RSHIFT": ">>",
+    "BINARY_AND": "&",
+    "BINARY_OR": "|",
+    "BINARY_XOR": "^",
+    "BINARY_MATRIX_MULTIPLY": "@",
+}
+# 3.11+ BINARY_OP operand index → operator. Pulled from CPython
+# ``Lib/opcode.py``; the inplace variants (idx ≥ 13) are deliberately
+# not surfaced — they appear in augmented-assignment statements which
+# we don't try to recover yet.
+_BINARY_OP_INDEX = {
+    0: "+",
+    1: "&",
+    2: "//",
+    3: "<<",
+    4: "@",
+    5: "*",
+    6: "%",
+    7: "|",
+    8: "**",
+    9: ">>",
+    10: "-",
+    11: "/",
+    12: "^",
+}
+
+
+def _format_literal(value: Any) -> str:
+    """Render *value* the way Python source would write it.
+
+    Uses ``repr`` for primitives (which gives ``True`` / ``None`` /
+    quoted strings / numeric forms), and explicit recursion for
+    containers so the recovered source survives lossless re-execution.
+
+    xdis materialises Python-2 ``long`` constants as a custom
+    ``LongTypeForPython3`` subclass of ``int`` whose ``__repr__``
+    returns the literal with a trailing ``L`` — invalid Python 3
+    syntax. Coerce any non-``bool`` int subclass back to a plain
+    ``int`` before formatting so the recovered source parses.
+    """
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and type(value) is not int
+    ):
+        value = int(value)
+    if isinstance(value, tuple):
+        if len(value) == 1:
+            return f"({_format_literal(value[0])},)"
+        return "(" + ", ".join(_format_literal(v) for v in value) + ")"
+    if isinstance(value, list):
+        return "[" + ", ".join(_format_literal(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{"
+            + ", ".join(
+                f"{_format_literal(k)}: {_format_literal(v)}" for k, v in value.items()
+            )
+            + "}"
+        )
+    if isinstance(value, frozenset):
+        return "frozenset({" + ", ".join(_format_literal(v) for v in value) + "})"
+    if isinstance(value, set):
+        return "{" + ", ".join(_format_literal(v) for v in value) + "}"
+    return repr(value)
+
+
+def _try_render_expr(instructions: list, consts: tuple) -> str | None:
+    """Render a value-producing instruction sequence as Python source.
+
+    Returns the expression text, or ``None`` if any opcode in the
+    sequence is outside the recogniser's small vocabulary. Designed to
+    be called on the *expression* part of a function body — i.e. every
+    instruction up to but not including the trailing ``RETURN_VALUE``.
+    """
+    if not instructions:
+        return None
+
+    # Single constant load — ``return <literal>`` / ``return None``.
+    if len(instructions) == 1:
+        ins = instructions[0]
+        if ins.opname in _LOAD_CONST_OPS_XDIS:
+            return _format_literal(ins.argval)
+        if ins.opname in _LOAD_NAME_OPS_XDIS:
+            return str(ins.argval)
+        return None
+
+    # Empty container literals: ``BUILD_LIST 0`` / ``BUILD_MAP 0`` /
+    # ``BUILD_SET 0`` — single-instruction containers with no payload.
+    if len(instructions) == 1 and instructions[0].opname == "BUILD_LIST":
+        if (instructions[0].arg or 0) == 0:
+            return "[]"
+
+    # Name chain: ``LOAD_X name; LOAD_ATTR a; LOAD_ATTR b`` → ``name.a.b``.
+    head = instructions[0]
+    if head.opname in _LOAD_NAME_OPS_XDIS:
+        parts = [str(head.argval)]
+        attrs_only = True
+        for ins in instructions[1:]:
+            if ins.opname == "LOAD_ATTR":
+                parts.append(str(ins.argval))
+            else:
+                attrs_only = False
+                break
+        if attrs_only:
+            return ".".join(parts)
+
+    # Container literals built from constant elements.
+    last = instructions[-1]
+    if last.opname == "BUILD_LIST":
+        body_ins = instructions[:-1]
+        n = last.arg or 0
+        if len(body_ins) == n and all(
+            i.opname in _LOAD_CONST_OPS_XDIS for i in body_ins
+        ):
+            return "[" + ", ".join(_format_literal(i.argval) for i in body_ins) + "]"
+    if last.opname == "BUILD_TUPLE":
+        body_ins = instructions[:-1]
+        n = last.arg or 0
+        if len(body_ins) == n and all(
+            i.opname in _LOAD_CONST_OPS_XDIS for i in body_ins
+        ):
+            if n == 1:
+                return f"({_format_literal(body_ins[0].argval)},)"
+            return "(" + ", ".join(_format_literal(i.argval) for i in body_ins) + ")"
+    if last.opname == "BUILD_SET":
+        body_ins = instructions[:-1]
+        n = last.arg or 0
+        if n == 0:
+            # Empty set isn't BUILD_SET — but defensive.
+            return "set()"
+        if len(body_ins) == n and all(
+            i.opname in _LOAD_CONST_OPS_XDIS for i in body_ins
+        ):
+            return "{" + ", ".join(_format_literal(i.argval) for i in body_ins) + "}"
+    if last.opname == "BUILD_MAP":
+        body_ins = instructions[:-1]
+        n = last.arg or 0
+        # Expect pairs of LOAD_CONST key / LOAD_CONST value.
+        if len(body_ins) == 2 * n and all(
+            i.opname in _LOAD_CONST_OPS_XDIS for i in body_ins
+        ):
+            pairs = []
+            for j in range(n):
+                k_val = body_ins[2 * j].argval
+                v_val = body_ins[2 * j + 1].argval
+                pairs.append(f"{_format_literal(k_val)}: {_format_literal(v_val)}")
+            return "{" + ", ".join(pairs) + "}"
+    if last.opname == "BUILD_CONST_KEY_MAP":
+        # Final instruction before BUILD_CONST_KEY_MAP loads the key
+        # tuple as a single constant. Preceding n values pushed in order.
+        if len(instructions) >= 2:
+            key_tuple_ins = instructions[-2]
+            if key_tuple_ins.opname in _LOAD_CONST_OPS_XDIS and isinstance(
+                key_tuple_ins.argval, tuple
+            ):
+                keys = key_tuple_ins.argval
+                value_ins = instructions[:-2]
+                n = last.arg or 0
+                if (
+                    len(value_ins) == n
+                    and len(keys) == n
+                    and all(i.opname in _LOAD_CONST_OPS_XDIS for i in value_ins)
+                ):
+                    pairs = [
+                        f"{_format_literal(keys[j])}: "
+                        f"{_format_literal(value_ins[j].argval)}"
+                        for j in range(n)
+                    ]
+                    return "{" + ", ".join(pairs) + "}"
+
+    # Simple call: ``LOAD_X callee; LOAD_X arg0; ...; CALL_FUNCTION n``
+    # (or CALL_METHOD / CALL on newer releases). Covers ``return len(s)``,
+    # ``return self.foo(x)``, ``return cls(arg)`` etc.
+    call = _try_render_call(instructions)
+    if call is not None:
+        return call
+
+    # Binary op on two simple operands: ``LOAD_X a; LOAD_X b; BINARY_*``.
+    if len(instructions) == 3:
+        a, b, op = instructions
+        if a.opname in (_LOAD_NAME_OPS_XDIS | _LOAD_CONST_OPS_XDIS) and b.opname in (
+            _LOAD_NAME_OPS_XDIS | _LOAD_CONST_OPS_XDIS
+        ):
+            symbol = None
+            if op.opname in _BINARY_OPS_PRE_3_11:
+                symbol = _BINARY_OPS_PRE_3_11[op.opname]
+            elif op.opname == "BINARY_OP":
+                idx = (op.arg or 0) & 0x0F
+                symbol = _BINARY_OP_INDEX.get(idx)
+            if symbol is not None:
+                left = (
+                    str(a.argval)
+                    if a.opname in _LOAD_NAME_OPS_XDIS
+                    else _format_literal(a.argval)
+                )
+                right = (
+                    str(b.argval)
+                    if b.opname in _LOAD_NAME_OPS_XDIS
+                    else _format_literal(b.argval)
+                )
+                return f"{left} {symbol} {right}"
+
+    return None
+
+
+_CALL_OPS = frozenset({"CALL_FUNCTION", "CALL_METHOD", "CALL"})
+
+
+def _try_render_call(instructions: list) -> str | None:
+    """Render a simple call expression — ``f(x, y)`` / ``a.b(x)``.
+
+    Returns ``None`` whenever the sequence contains anything outside
+    the small "callee + atomic args + CALL" template — keyword
+    arguments, star-unpacking, nested calls etc. all fall through to
+    UnknownBlock, which is the safer default.
+    """
+    if len(instructions) < 2:
+        return None
+    last = instructions[-1]
+    if last.opname not in _CALL_OPS:
+        return None
+    n_args = last.arg if last.arg is not None else 0
+
+    # Body before the CALL: [callee, possible LOAD_ATTR/LOAD_METHOD,
+    # then n_args atomic args].
+    body_ins = instructions[:-1]
+    if len(body_ins) < 1 + n_args:
+        return None
+
+    # Args are the last n_args entries; everything before them must
+    # collapse to a single name-chain expression.
+    args_part = body_ins[len(body_ins) - n_args :] if n_args else []
+    callee_part = body_ins[: len(body_ins) - n_args]
+
+    # Method-call shape: ``LOAD_X obj; LOAD_METHOD m``. CALL_METHOD's
+    # argcount counts only the args (not self), and LOAD_METHOD has
+    # already pushed self + the method onto the stack.
+    if (
+        len(callee_part) >= 2
+        and callee_part[0].opname in _LOAD_NAME_OPS_XDIS
+        and callee_part[1].opname == "LOAD_METHOD"
+    ):
+        method_parts = [str(callee_part[0].argval), str(callee_part[1].argval)]
+        # Any further LOAD_ATTR after LOAD_METHOD would be unusual but
+        # not impossible; extend the chain.
+        for ins in callee_part[2:]:
+            if ins.opname != "LOAD_ATTR":
+                return None
+            method_parts.append(str(ins.argval))
+        callee = ".".join(method_parts)
+    else:
+        callee = _try_render_expr(callee_part, ())
+        if callee is None:
+            return None
+        # CPython's CALL opcode on 3.11+ may have a leading PUSH_NULL we
+        # already stripped via the prologue filter. callee should now
+        # be a simple name chain.
+
+    args_text: list[str] = []
+    for ins in args_part:
+        if ins.opname in _LOAD_NAME_OPS_XDIS:
+            args_text.append(str(ins.argval))
+        elif ins.opname in _LOAD_CONST_OPS_XDIS:
+            args_text.append(_format_literal(ins.argval))
+        else:
+            return None
+    return f"{callee}({', '.join(args_text)})"
+
+
+def _try_render_raise(instructions: list) -> str | None:
+    """Recover ``raise <expr>`` / ``raise <Name>(args)`` from bytecode.
+
+    The recogniser handles two shapes:
+
+    * ``LOAD_X name; RAISE_VARARGS 1`` — bare ``raise name``
+      (or ``raise <Name>`` for a class).
+    * ``LOAD_X callable; LOAD_X arg; ...; CALL n; RAISE_VARARGS 1``
+      — ``raise SomeException(args)``. Argument list is rendered
+      via the same atomic-arg vocabulary as :func:`_try_render_call`.
+
+    Trailing ``LOAD_CONST None; RETURN_VALUE`` (the implicit return
+    after an unreachable point) is stripped before matching — CPython
+    emits it on every function regardless of whether the body raises.
+
+    Returns ``None`` for ``raise ... from ...`` (RAISE_VARARGS 2)
+    and ``raise`` without an operand (RAISE_VARARGS 0) — neither is
+    common enough to justify the extra recogniser surface.
+    """
+    insns = list(instructions)
+    # Strip implicit ``LOAD_CONST None; RETURN_VALUE`` epilogue, if
+    # present — the compiler appends it after every body even when
+    # the user's last statement was a ``raise``.
+    if (
+        len(insns) >= 2
+        and insns[-1].opname == "RETURN_VALUE"
+        and insns[-2].opname in _LOAD_CONST_OPS_XDIS
+        and insns[-2].argval is None
+    ):
+        insns = insns[:-2]
+    elif insns and insns[-1].opname == "RETURN_CONST" and insns[-1].argval is None:
+        insns = insns[:-1]
+    if not insns or insns[-1].opname != "RAISE_VARARGS":
+        return None
+    if (insns[-1].arg or 0) != 1:
+        return None
+    body = insns[:-1]
+    if not body:
+        return None
+    # If the body collapses to a single name / attribute chain it's a
+    # bare ``raise name``.
+    bare = _try_render_expr(body, ())
+    if bare is not None:
+        return f"raise {bare}"
+    # Otherwise try the call shape ``Callable(args)``.
+    call = _try_render_call(body)
+    if call is not None:
+        return f"raise {call}"
+    return None
+
+
+def _try_render_init_assignments(instructions: list) -> str | None:
+    """Recover ``self.x = x; self.y = y; ...`` constructor bodies.
+
+    Expects a sequence of one or more ``(LOAD value, LOAD self,
+    STORE_ATTR attr)`` triples followed by an implicit return
+    (``LOAD_CONST None; RETURN_VALUE`` on most versions; on 3.12+ the
+    fused ``RETURN_CONST None``).
+
+    *value* must be a simple name (parameter / local) or a constant
+    literal — anything more complex would require a full expression
+    recogniser, and the resulting recovered source would be too easy
+    to render incorrectly.
+    """
+    if len(instructions) < 4:
+        return None
+    # Strip the trailing implicit-return epilogue.
+    tail = instructions[-2:]
+    if (
+        tail[0].opname in _LOAD_CONST_OPS_XDIS
+        and tail[0].argval is None
+        and tail[1].opname == "RETURN_VALUE"
+    ):
+        body = instructions[:-2]
+    elif instructions[-1].opname == "RETURN_CONST" and instructions[-1].argval is None:
+        body = instructions[:-1]
+    else:
+        return None
+    if not body or len(body) % 3 != 0:
+        return None
+    lines: list[str] = []
+    for i in range(0, len(body), 3):
+        value, self_load, store = body[i], body[i + 1], body[i + 2]
+        if store.opname != "STORE_ATTR":
+            return None
+        if self_load.opname not in _LOAD_NAME_OPS_XDIS:
+            return None
+        if value.opname in _LOAD_NAME_OPS_XDIS:
+            val_text = str(value.argval)
+        elif value.opname in _LOAD_CONST_OPS_XDIS:
+            val_text = _format_literal(value.argval)
+        else:
+            return None
+        lines.append(f"{self_load.argval}.{store.argval} = {val_text}")
+    return "\n".join(lines)
+
+
+def _try_recover_trivial_body_xdis(
+    code: Any,
+    walker: _Walker,
+    *,
+    has_docstring: bool,
+) -> str | None:
+    """Cross-version sibling of :func:`pychd.rules._try_recover_trivial_body`.
+
+    Recovers the body of a function whose entire payload is one of:
+
+    * ``pass`` — ``LOAD_CONST None ; RETURN_VALUE`` after dropping the
+      optional docstring + bookkeeping.
+    * ``return <literal>`` / ``return None`` — single ``LOAD_CONST``
+      (or ``RETURN_CONST`` on 3.12+).
+    * ``return name(.attr)*`` — single name load + attribute chain.
+    * ``return [literals]`` / ``return (a, b, ...)`` / ``return {k: v}``
+      — small literal containers.
+    * ``return X + Y`` and friends — simple binary ops on two locals
+      / constants.
+
+    Returns ``None`` for everything else (including bodies with control
+    flow, closures, or generators); the caller falls back to
+    ``UnknownBlock``.
+    """
+    flags = getattr(code, "co_flags", 0) or 0
+    if flags & (_CO_GENERATOR | _CO_COROUTINE | _CO_ASYNC_GENERATOR):
+        return None
+    if getattr(code, "co_freevars", ()):
+        # Free variables would bind to an enclosing scope the rendered
+        # standalone function can't reach. Skip rather than emit code
+        # that parses but raises at runtime.
+        return None
+
+    instructions = _iter_instructions(code, walker.opc)
+    instructions = [i for i in instructions if i.opname not in _TRIVIAL_PROLOGUE_XDIS]
+    if not instructions:
+        return None
+
+    consts = getattr(code, "co_consts", ())
+
+    # Skip the leading docstring ``LOAD_CONST <str> ; POP_TOP`` pair if
+    # the caller said one was present.
+    if (
+        has_docstring
+        and len(instructions) >= 2
+        and instructions[0].opname in _LOAD_CONST_OPS_XDIS
+        and isinstance(instructions[0].argval, str)
+        and instructions[1].opname == "POP_TOP"
+    ):
+        instructions = instructions[2:]
+        if not instructions:
+            return None
+
+    # ``return CONST`` via the 3.12+ fused opcode.
+    if len(instructions) == 1 and instructions[0].opname == "RETURN_CONST":
+        return f"return {_format_literal(instructions[0].argval)}"
+
+    # ``raise <name>(<arg>?, ...)`` — single raise statement. The
+    # bytecode shape is ``LOAD callable; (LOAD args)*; CALL n;
+    # RAISE_VARARGS 1`` or, for plain ``raise X``, ``LOAD X;
+    # RAISE_VARARGS 1``.
+    raise_body = _try_render_raise(instructions)
+    if raise_body is not None:
+        return raise_body
+
+    # ``self.x = x; self.y = y; ...`` — typical ``__init__`` body.
+    # Match a sequence of ``LOAD value; LOAD self; STORE_ATTR attr``
+    # triples followed by the implicit ``LOAD_CONST None;
+    # RETURN_VALUE`` epilogue. Useful for the common dataclass-shaped
+    # constructor that the simple-body recogniser would otherwise
+    # leave as ``UnknownBlock``.
+    init_body = _try_render_init_assignments(instructions)
+    if init_body is not None:
+        return init_body
+
+    # Need a trailing RETURN_VALUE for every other shape.
+    if instructions[-1].opname != "RETURN_VALUE":
+        return None
+    head = instructions[:-1]
+    if not head:
+        return None
+
+    # ``pass`` — body is just ``LOAD_CONST None``.
+    if (
+        len(head) == 1
+        and head[0].opname in _LOAD_CONST_OPS_XDIS
+        and head[0].argval is None
+    ):
+        return "pass"
+
+    expr = _try_render_expr(head, consts)
+    if expr is not None:
+        return f"return {expr}"
+
+    return None
 
 
 def _extract_docstring(walker: _Walker, code: Any) -> str | None:
@@ -1191,6 +1731,17 @@ def _literal_value(v: Any) -> Any:
 
 
 def _format_literal(value: Any) -> str:
+    # xdis materialises Python-2 ``long`` constants as a custom
+    # ``LongTypeForPython3`` subclass of ``int`` whose ``__repr__``
+    # returns the literal with a trailing ``L`` — invalid Python 3
+    # syntax. Coerce any non-``bool`` int subclass back to a plain
+    # ``int`` before formatting so the recovered source parses.
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and type(value) is not int
+    ):
+        value = int(value)
     if value is None or isinstance(value, (int, float, bool, bytes, str)):
         return repr(value)
     if isinstance(value, tuple):

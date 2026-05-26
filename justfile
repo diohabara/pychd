@@ -93,8 +93,16 @@ bench-versions:
     uv run python tools/build_multiversion_fixtures.py
     uv run pytest tests/test_versions.py -v
 
-# Run the comparative benchmark (pychd vs uncompyle6 vs decompyle3).
-# Writes assets/_comparison.json consumed by `bench-figures`.
+# Build every third-party decompiler this repo benchmarks against
+# (pycdc from source, PyLingual via podman). Optional — the
+# comparison benchmark gracefully skips tools whose binaries / images
+# are absent. uncompyle6 and decompyle3 are installed by `just setup`.
+decompilers-build:
+    bash tools/setup_decompilers.sh
+
+# Run the comparative benchmark across every installed decompiler
+# (pychd, uncompyle6, decompyle3, pycdc, pylingual). Writes
+# assets/_comparison.json which `bench-figures` consumes.
 bench-compare:
     uv run python tools/compare_decompilers.py
 

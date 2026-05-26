@@ -1,514 +1,756 @@
 {
-  "pychd (rules-only)": {
-    "modules": 23,
-    "parses": 22,
-    "signature_match": 22,
-    "declaration_match": 22,
-    "strict_match": 3,
-    "skipped": 0,
-    "error": null,
-    "per_module": [
-      {
-        "name": "stdlib:calendar",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
+  "versions": {
+    "3.8": {
+      "pychd (rules-only)": {
+        "modules": 11,
+        "parses": 11,
+        "signature_match": 11,
+        "declaration_match": 10,
+        "strict_match": 1,
+        "bytecode_exact": 0,
+        "bytecode_normalized": 0,
+        "behavioral_smoke": 3,
+        "functional_correctness": 0,
+        "functional_total": 0,
+        "edit_similarity_sum": 3.322366735470746,
+        "skipped": 0,
+        "error": null,
+        "per_module": [
+          {
+            "name": "stdlib:calendar",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.38595059310044616,
+            "functional_correctness": null
+          },
+          {
+            "name": "stdlib:contextlib",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": true,
+            "edit_similarity": 0.108701711355148,
+            "functional_correctness": null
+          },
+          {
+            "name": "stdlib:copy",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.46020066889632105,
+            "functional_correctness": null
+          },
+          {
+            "name": "stdlib:dataclasses",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.16461246331779733,
+            "functional_correctness": null
+          },
+          {
+            "name": "stdlib:enum",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.15384300397199133,
+            "functional_correctness": null
+          },
+          {
+            "name": "stdlib:functools",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.19395142939886642,
+            "functional_correctness": null
+          },
+          {
+            "name": "stdlib:ipaddress",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": true,
+            "edit_similarity": 0.5159589688451099,
+            "functional_correctness": null
+          },
+          {
+            "name": "pypi:six_six",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.14179187534780188,
+            "functional_correctness": null
+          },
+          {
+            "name": "pypi:packaging___init__",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": true,
+            "edit_similarity": 0.5617128463476071,
+            "functional_correctness": null
+          },
+          {
+            "name": "pypi:packaging__elffile",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": true,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.3793103448275862,
+            "functional_correctness": null
+          },
+          {
+            "name": "pypi:packaging__manylinux",
+            "ok": true,
+            "sig": true,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.25633283006207014,
+            "functional_correctness": null
+          }
+        ],
+        "version": "main (this repo)",
+        "coverage_label": "every CPython 3.x"
       },
-      {
-        "name": "stdlib:contextlib",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
+      "uncompyle6": {
+        "modules": 11,
+        "parses": 2,
+        "signature_match": 2,
+        "declaration_match": 2,
+        "strict_match": 1,
+        "bytecode_exact": 0,
+        "bytecode_normalized": 1,
+        "behavioral_smoke": 1,
+        "functional_correctness": 0,
+        "functional_total": 0,
+        "edit_similarity_sum": 5.935028154196684,
+        "skipped": 0,
+        "error": null,
+        "per_module": [
+          {
+            "name": "stdlib:calendar",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.7236953601322724,
+            "functional_correctness": null,
+            "detail": "stdlib_calendar.py"
+          },
+          {
+            "name": "stdlib:contextlib",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.260925955948769,
+            "functional_correctness": null,
+            "detail": "stdlib_contextlib.py"
+          },
+          {
+            "name": "stdlib:copy",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.8388525861114188,
+            "functional_correctness": null,
+            "detail": "stdlib_copy.py"
+          },
+          {
+            "name": "stdlib:dataclasses",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.39174601490597566,
+            "functional_correctness": null,
+            "detail": "stdlib_dataclasses.py"
+          },
+          {
+            "name": "stdlib:enum",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.38795785550027806,
+            "functional_correctness": null,
+            "detail": "stdlib_enum.py"
+          },
+          {
+            "name": "stdlib:functools",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.41247433649537685,
+            "functional_correctness": null,
+            "detail": "stdlib_functools.py"
+          },
+          {
+            "name": "stdlib:ipaddress",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.740181705256164,
+            "functional_correctness": null,
+            "detail": "stdlib_ipaddress.py"
+          },
+          {
+            "name": "pypi:six_six",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.706321831245143,
+            "functional_correctness": null,
+            "detail": "pypi_six_six.py"
+          },
+          {
+            "name": "pypi:packaging___init__",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": true,
+            "bx": false,
+            "bn": true,
+            "bs": true,
+            "edit_similarity": 0.23701002734731086,
+            "functional_correctness": null,
+            "detail": "pypi_packaging___init__.py"
+          },
+          {
+            "name": "pypi:packaging__elffile",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.6578000312940072,
+            "functional_correctness": null,
+            "detail": "pypi_packaging__elffile.py"
+          },
+          {
+            "name": "pypi:packaging__manylinux",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.578062449959968,
+            "functional_correctness": null,
+            "detail": "pypi_packaging__manylinux.py"
+          }
+        ],
+        "version": "uncompyle6, version 3.9.3",
+        "coverage_label": "2.4 \u2013 3.8 (no 3.9+)"
       },
-      {
-        "name": "stdlib:copy",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
+      "decompyle3": {
+        "modules": 11,
+        "parses": 4,
+        "signature_match": 4,
+        "declaration_match": 3,
+        "strict_match": 1,
+        "bytecode_exact": 0,
+        "bytecode_normalized": 1,
+        "behavioral_smoke": 3,
+        "functional_correctness": 0,
+        "functional_total": 0,
+        "edit_similarity_sum": 6.453382831980508,
+        "skipped": 0,
+        "error": null,
+        "per_module": [
+          {
+            "name": "stdlib:calendar",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": true,
+            "edit_similarity": 0.7377731958762886,
+            "functional_correctness": null,
+            "detail": "stdlib_calendar.py"
+          },
+          {
+            "name": "stdlib:contextlib",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.24904454172746857,
+            "functional_correctness": null,
+            "detail": "stdlib_contextlib.py"
+          },
+          {
+            "name": "stdlib:copy",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.8476055539812978,
+            "functional_correctness": null,
+            "detail": "stdlib_copy.py"
+          },
+          {
+            "name": "stdlib:dataclasses",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.3942326947466791,
+            "functional_correctness": null,
+            "detail": "stdlib_dataclasses.py"
+          },
+          {
+            "name": "stdlib:enum",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.4292159348922242,
+            "functional_correctness": null,
+            "detail": "stdlib_enum.py"
+          },
+          {
+            "name": "stdlib:functools",
+            "ok": true,
+            "sig": true,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": true,
+            "edit_similarity": 0.7052889895196388,
+            "functional_correctness": null,
+            "detail": "stdlib_functools.py"
+          },
+          {
+            "name": "stdlib:ipaddress",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.78108470829715,
+            "functional_correctness": null,
+            "detail": "stdlib_ipaddress.py"
+          },
+          {
+            "name": "pypi:six_six",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.7621985089899137,
+            "functional_correctness": null,
+            "detail": "pypi_six_six.py"
+          },
+          {
+            "name": "pypi:packaging___init__",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": true,
+            "bx": false,
+            "bn": true,
+            "bs": true,
+            "edit_similarity": 0.23701002734731086,
+            "functional_correctness": null,
+            "detail": "pypi_packaging___init__.py"
+          },
+          {
+            "name": "pypi:packaging__elffile",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.6681188735024117,
+            "functional_correctness": null,
+            "detail": "pypi_packaging__elffile.py"
+          },
+          {
+            "name": "pypi:packaging__manylinux",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.6418098031001257,
+            "functional_correctness": null,
+            "detail": "pypi_packaging__manylinux.py"
+          }
+        ],
+        "version": "3.9.3 (PyPI)",
+        "coverage_label": "3.7 / 3.8 only"
       },
-      {
-        "name": "stdlib:dataclasses",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
+      "pycdc": {
+        "modules": 11,
+        "parses": 1,
+        "signature_match": 1,
+        "declaration_match": 1,
+        "strict_match": 1,
+        "bytecode_exact": 0,
+        "bytecode_normalized": 1,
+        "behavioral_smoke": 1,
+        "functional_correctness": 0,
+        "functional_total": 0,
+        "edit_similarity_sum": 3.4503165545743752,
+        "skipped": 1,
+        "error": null,
+        "per_module": [
+          {
+            "name": "stdlib:calendar",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.4293249168590735,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "stdlib:contextlib",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.1271772321973861,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "stdlib:copy",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.595479551932127,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "stdlib:dataclasses",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.14819459685426137,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "stdlib:enum",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.33448357924797717,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "stdlib:functools",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.21331677932588403,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "stdlib:ipaddress",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.12298252634387088,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "pypi:six_six",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.48841713111482343,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "pypi:packaging___init__",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": true,
+            "bx": false,
+            "bn": true,
+            "bs": true,
+            "edit_similarity": 0.5123042505592841,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "pypi:packaging__elffile",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.4786359901396878,
+            "functional_correctness": null,
+            "detail": "stdout"
+          },
+          {
+            "name": "pypi:packaging__manylinux",
+            "ok": false,
+            "error": "empty stdout"
+          }
+        ],
+        "version": "b428976 (2026-04-06)",
+        "coverage_label": "1.0 \u2013 3.10 (declarations only past 3.8)"
       },
-      {
-        "name": "stdlib:enum",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:functools",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:ipaddress",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:queue",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:socketserver",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:string",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:tempfile",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:textwrap",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:traceback",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": true
-      },
-      {
-        "name": "stdlib:typing",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:weakref",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "pypi:six_six",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "pypi:packaging___init__",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "pypi:packaging__elffile",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": true
-      },
-      {
-        "name": "pypi:packaging__manylinux",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "pypi:certifi___main__",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "pypi:certifi_core",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "pypi:idna___init__",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": true
-      },
-      {
-        "name": "pypi:idna_cli",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
+      "pylingual": {
+        "modules": 11,
+        "parses": 2,
+        "signature_match": 2,
+        "declaration_match": 2,
+        "strict_match": 2,
+        "bytecode_exact": 0,
+        "bytecode_normalized": 1,
+        "behavioral_smoke": 1,
+        "functional_correctness": 0,
+        "functional_total": 0,
+        "edit_similarity_sum": 2.660608041163778,
+        "skipped": 6,
+        "error": null,
+        "per_module": [
+          {
+            "name": "stdlib:calendar",
+            "ok": false,
+            "error": "subprocess timeout: 60.0s"
+          },
+          {
+            "name": "stdlib:contextlib",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.23180098589934656,
+            "functional_correctness": null,
+            "detail": "decompiled_stdlib_contextlib.py"
+          },
+          {
+            "name": "stdlib:copy",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.8919042189281642,
+            "functional_correctness": null,
+            "detail": "decompiled_stdlib_copy.py"
+          },
+          {
+            "name": "stdlib:dataclasses",
+            "ok": false,
+            "error": "subprocess timeout: 60.0s"
+          },
+          {
+            "name": "stdlib:enum",
+            "ok": false,
+            "error": "subprocess timeout: 60.0s"
+          },
+          {
+            "name": "stdlib:functools",
+            "ok": false,
+            "error": "subprocess timeout: 60.0s"
+          },
+          {
+            "name": "stdlib:ipaddress",
+            "ok": false,
+            "error": "subprocess timeout: 60.0s"
+          },
+          {
+            "name": "pypi:six_six",
+            "ok": false,
+            "error": "subprocess timeout: 60.0s"
+          },
+          {
+            "name": "pypi:packaging___init__",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": true,
+            "bx": false,
+            "bn": true,
+            "bs": true,
+            "edit_similarity": 0.12549019607843137,
+            "functional_correctness": null,
+            "detail": "decompiled_pypi_packaging___init__.py"
+          },
+          {
+            "name": "pypi:packaging__elffile",
+            "ok": false,
+            "sig": false,
+            "decl": false,
+            "strict": false,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.7340886371209597,
+            "functional_correctness": null,
+            "detail": "decompiled_pypi_packaging__elffile.py"
+          },
+          {
+            "name": "pypi:packaging__manylinux",
+            "ok": true,
+            "sig": true,
+            "decl": true,
+            "strict": true,
+            "bx": false,
+            "bn": false,
+            "bs": false,
+            "edit_similarity": 0.6773240031368764,
+            "functional_correctness": null,
+            "detail": "decompiled_pypi_packaging__manylinux.py"
+          }
+        ],
+        "version": "main (image: pychd-pylingual:latest)",
+        "coverage_label": "3.6 \u2013 3.13 (ML-based)"
       }
-    ]
+    }
   },
-  "uncompyle6": {
-    "modules": 23,
-    "parses": 5,
-    "signature_match": 4,
-    "declaration_match": 4,
-    "strict_match": 3,
-    "skipped": 2,
-    "error": null,
-    "per_module": [
-      {
-        "name": "stdlib:calendar",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:contextlib",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:copy",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:dataclasses",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:enum",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:functools",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:ipaddress",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:queue",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:socketserver",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:string",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:tempfile",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:textwrap",
-        "ok": false,
-        "error": "non-zero exit"
-      },
-      {
-        "name": "stdlib:traceback",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:typing",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:weakref",
-        "ok": false,
-        "error": "non-zero exit"
-      },
-      {
-        "name": "pypi:six_six",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "pypi:packaging___init__",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": true
-      },
-      {
-        "name": "pypi:packaging__elffile",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "pypi:packaging__manylinux",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "pypi:certifi___main__",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": true
-      },
-      {
-        "name": "pypi:certifi_core",
-        "ok": true,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "pypi:idna___init__",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": true
-      },
-      {
-        "name": "pypi:idna_cli",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      }
-    ]
-  },
-  "decompyle3": {
-    "modules": 23,
-    "parses": 12,
-    "signature_match": 12,
-    "declaration_match": 11,
-    "strict_match": 3,
-    "skipped": 0,
-    "error": null,
-    "per_module": [
-      {
-        "name": "stdlib:calendar",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:contextlib",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:copy",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:dataclasses",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:enum",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:functools",
-        "ok": true,
-        "sig": true,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:ipaddress",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:queue",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:socketserver",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:string",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:tempfile",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:textwrap",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:traceback",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "stdlib:typing",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "stdlib:weakref",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "pypi:six_six",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "pypi:packaging___init__",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": true
-      },
-      {
-        "name": "pypi:packaging__elffile",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "pypi:packaging__manylinux",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      },
-      {
-        "name": "pypi:certifi___main__",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": true
-      },
-      {
-        "name": "pypi:certifi_core",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": false
-      },
-      {
-        "name": "pypi:idna___init__",
-        "ok": true,
-        "sig": true,
-        "decl": true,
-        "strict": true
-      },
-      {
-        "name": "pypi:idna_cli",
-        "ok": false,
-        "sig": false,
-        "decl": false,
-        "strict": false
-      }
-    ]
-  }
+  "missing": [],
+  "tools_attempted": [
+    "uncompyle6",
+    "decompyle3",
+    "pycdc",
+    "pylingual"
+  ]
 }

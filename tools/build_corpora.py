@@ -356,9 +356,27 @@ def build_humaneval(dst: Path, *, force: bool) -> int:
     The canonical solution is just the body of a function; we prefix it
     with the ``prompt`` (the signature + docstring) so the resulting
     file is standalone and importable.
+
+    Two artefacts come out of this builder:
+
+    * ``<task_id>.py`` — the importable canonical solution. Compiled
+      to ``.pyc`` by the benchmark and handed to pychd for recovery.
+    * ``_tests.json`` — a sidecar mapping ``{file.py: {test, entry_point}}``
+      consumed by :func:`pychd.semantic.functional_correctness` to run
+      the Pass@1 oracle on the *recovered* file. We keep the test out
+      of the importable .py so pychd's recovery target stays clean —
+      otherwise the benchmark would be scoring how well pychd recovers
+      the *test* function, which isn't what we want to measure.
     """
     if dst.exists() and not force and any(dst.glob("*.py")):
-        return sum(1 for _ in dst.glob("*.py"))
+        # If the .py files exist but _tests.json doesn't, we still
+        # want to populate the sidecar — older corpus builds predate
+        # the Pass@1 metric and ship without test data.
+        sidecar = dst / "_tests.json"
+        if sidecar.exists():
+            return sum(1 for _ in dst.glob("*.py"))
+        # Fall through to rebuild; the .py files will be overwritten
+        # with identical content, plus the sidecar will be created.
     if dst.exists():
         shutil.rmtree(dst)
     dst.mkdir(parents=True, exist_ok=True)
@@ -376,6 +394,7 @@ def build_humaneval(dst: Path, *, force: bool) -> int:
         return 0
 
     n = 0
+    tests: dict[str, dict[str, str]] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -388,11 +407,14 @@ def build_humaneval(dst: Path, *, force: bool) -> int:
         task_id = problem.get("task_id", "")
         prompt = problem.get("prompt", "")
         canonical = problem.get("canonical_solution", "")
+        test_src = problem.get("test", "")
+        entry_point = problem.get("entry_point", "")
         if not task_id or not canonical:
             continue
         # Sanitise ``HumanEval/0`` -> ``HumanEval_0.py``.
         safe = task_id.replace("/", "_")
-        path = dst / f"{safe}.py"
+        filename = f"{safe}.py"
+        path = dst / filename
         # ``prompt`` typically ends with the function header and an
         # empty body; ``canonical_solution`` is the indented body. Join
         # them so the file is a complete, importable Python module.
@@ -407,6 +429,20 @@ def build_humaneval(dst: Path, *, force: bool) -> int:
             n += 1
         except OSError as e:
             print(f"  humaneval: {task_id}: write failed: {e}", file=sys.stderr)
+            continue
+        if test_src and entry_point:
+            tests[filename] = {
+                "test": test_src,
+                "entry_point": entry_point,
+            }
+
+    # Always overwrite the sidecar so it stays in sync with the .py files.
+    try:
+        (dst / "_tests.json").write_text(
+            json.dumps(tests, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError as e:
+        print(f"  humaneval: _tests.json write failed: {e}", file=sys.stderr)
     return n
 
 

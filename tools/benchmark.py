@@ -76,6 +76,7 @@ warnings.simplefilter("ignore", SyntaxWarning)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pychd.decompile import Mode, decompile_pyc  # noqa: E402
+from pychd.semantic import compare_all  # noqa: E402
 
 
 @dataclass
@@ -83,8 +84,7 @@ class ModuleMetrics:
     name: str
     loc: int
     parses: bool
-    # Three-tier match metric per
-    # `references` in the skeptic review:
+    # Three-tier match metric:
     #
     # - signature_match  — every original class / function / import name
     #                      survives in the recovered tree (set-subset).
@@ -106,6 +106,24 @@ class ModuleMetrics:
     signature_match: bool = False
     declaration_match: bool = False
     strict_match: bool = False
+    # Semantic axes (opt-in via the ``semantic`` flag on
+    # :func:`measure_module`). All three default to ``False`` so a
+    # benchmark run with the axes disabled looks like a clean miss
+    # rather than spurious success.
+    bytecode_exact: bool = False
+    bytecode_normalized: bool = False
+    behavioral_smoke: bool = False
+    bytecode_exact_detail: str = ""
+    bytecode_normalized_detail: str = ""
+    behavioral_smoke_detail: str = ""
+    # Continuous similarity axis (Decompile-Bench "Edit Similarity").
+    # 1.0 = textually identical; 0.0 = entirely dissimilar.
+    edit_similarity: float = 0.0
+    # Pass@1 functional-correctness axis (Decompile-Bench / PyLingual).
+    # ``None`` denotes "no test oracle available for this module" — the
+    # common case outside HumanEval. ``False`` denotes a real failure.
+    functional_correctness: bool | None = None
+    functional_correctness_detail: str = ""
     error: str | None = None
 
 
@@ -176,10 +194,25 @@ def _strip_for_skeleton(tree: ast.AST) -> ast.AST:
     Function/method bodies are replaced with a single ``Pass``;
     annotations on parameters, returns, and ``AnnAssign`` are erased;
     decorators are dropped (they survive textually but the rule engine
-    doesn't always reattach them in the same order). After this, an
-    ``ast.dump`` equality check is meaningful for skeleton comparison.
+    doesn't always reattach them in the same order). Module-level
+    docstrings, string literal quote styles, and numeric literal forms
+    are normalised away too — those are CPython-compiler-induced
+    cosmetic differences, not real recovery regressions. After this,
+    an ``ast.dump`` equality check is meaningful for skeleton
+    comparison.
     """
     cloned = ast.parse(ast.unparse(tree))
+    # Drop module-level docstring (CPython's ``inspect.cleandoc``
+    # normalisation strips leading whitespace that we can't always
+    # round-trip exactly).
+    if (
+        isinstance(cloned, ast.Module)
+        and cloned.body
+        and isinstance(cloned.body[0], ast.Expr)
+        and isinstance(cloned.body[0].value, ast.Constant)
+        and isinstance(cloned.body[0].value.value, str)
+    ):
+        cloned.body = cloned.body[1:]
     for node in ast.walk(cloned):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             node.body = [ast.Pass()]
@@ -200,6 +233,15 @@ def _strip_for_skeleton(tree: ast.AST) -> ast.AST:
             node.args.kw_defaults = [None for _ in node.args.kwonlyargs]
         elif isinstance(node, ast.ClassDef):
             node.decorator_list = []
+            # Drop class-level docstring (same cleandoc-normalisation
+            # concern as module docstrings above).
+            if (
+                node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            ):
+                node.body = node.body[1:] or [ast.Pass()]
             # Re-base classes can use complex expressions; reduce to names.
             new_bases: list[ast.expr] = []
             for b in node.bases:
@@ -230,11 +272,11 @@ def _skeleton_match(original: ast.AST, recovered: ast.AST | None) -> bool:
 def _signature_signature(tree: ast.AST) -> set[str]:
     """Names that the *signature_match* metric requires.
 
-    Per the skeptic review: every class, function, import — at module
-    level or directly inside a class body — must survive in the
-    recovered module. Functions defined *inside other function bodies*
-    are excluded: function bodies are LLM territory (rule pass emits a
-    placeholder), so nested-function recovery is out of scope.
+    Every class, function, import — at module level or directly inside
+    a class body — must survive in the recovered module. Functions
+    defined *inside other function bodies* are excluded: function
+    bodies are LLM territory (rule pass emits a placeholder), so
+    nested-function recovery is out of scope.
     """
     if not isinstance(tree, ast.Module):
         return set()
@@ -325,9 +367,38 @@ def _declaration_match(original: ast.AST, recovered: ast.AST | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def measure_module(py_file: Path) -> ModuleMetrics | None:
+_TESTS_SIDECAR_CACHE: dict[Path, dict[str, dict[str, str]]] = {}
+
+
+def _load_tests_sidecar(py_file: Path) -> dict[str, str] | None:
+    """Return ``{test, entry_point}`` for *py_file* if its corpus
+    directory carries a ``_tests.json`` oracle (HumanEval-style), or
+    ``None`` otherwise. Cached per directory so a full corpus walk
+    parses the sidecar once."""
+    parent = py_file.parent
+    sidecar = parent / "_tests.json"
+    if not sidecar.is_file():
+        return None
+    if parent not in _TESTS_SIDECAR_CACHE:
+        try:
+            _TESTS_SIDECAR_CACHE[parent] = json.loads(sidecar.read_text())
+        except OSError, json.JSONDecodeError:
+            _TESTS_SIDECAR_CACHE[parent] = {}
+    return _TESTS_SIDECAR_CACHE[parent].get(py_file.name)
+
+
+def measure_module(py_file: Path, *, semantic: bool = True) -> ModuleMetrics | None:
     """Measure recovery quality for one .py file. Returns None if
-    the file can't be compiled at all (e.g. Python 2 syntax)."""
+    the file can't be compiled at all (e.g. Python 2 syntax).
+
+    When *semantic* is True, runs the full semantic + similarity
+    comparator suite from :mod:`pychd.semantic`
+    (bytecode_exact / bytecode_normalized / behavioral_smoke /
+    edit_similarity, plus functional_correctness when a
+    ``_tests.json`` sidecar is present next to *py_file*).
+    Disabling it skips all of that — useful when running on a large
+    corpus where the per-module overhead matters.
+    """
     try:
         src = py_file.read_text()
     except OSError as e:
@@ -458,6 +529,52 @@ def measure_module(py_file: Path) -> ModuleMetrics | None:
     sig = _signature_match(original_tree, recovered_tree)
     decl = _declaration_match(original_tree, recovered_tree)
 
+    # Semantic + similarity axes. We re-compile under a fresh tempdir
+    # so that the original .pyc has settled (the one produced earlier
+    # in this function went out of scope when its TemporaryDirectory
+    # closed).
+    bx_match = bx_detail = None
+    bn_match = bn_detail = None
+    bs_match = bs_detail = None
+    fc_match: bool | None = None
+    fc_detail = ""
+    edit_sim = 0.0
+    if semantic:
+        sidecar = _load_tests_sidecar(py_file)
+        test_src = sidecar.get("test") if sidecar else None
+        entry_point = sidecar.get("entry_point") if sidecar else None
+        with tempfile.TemporaryDirectory() as tmp:
+            pyc2 = Path(tmp) / "in.pyc"
+            try:
+                py_compile.compile(str(py_file), cfile=str(pyc2), doraise=True)
+                sem = compare_all(
+                    pyc2,
+                    py_file,
+                    out,
+                    py_interp=sys.executable,
+                    orig_src=src,
+                    test_src=test_src,
+                    entry_point=entry_point,
+                )
+                bx_match = sem.bytecode_exact.match
+                bx_detail = sem.bytecode_exact.detail
+                bn_match = sem.bytecode_normalized.match
+                bn_detail = sem.bytecode_normalized.detail
+                bs_match = sem.behavioral_smoke.match
+                bs_detail = sem.behavioral_smoke.detail
+                edit_sim = sem.edit_similarity
+                if sem.functional_correctness is not None:
+                    fc_match = sem.functional_correctness.match
+                    fc_detail = sem.functional_correctness.detail
+            except Exception as e:
+                # Never let a semantic-comparator hiccup abort the
+                # whole row — record the failure and keep going.
+                bx_match = bn_match = bs_match = False
+                bx_detail = bn_detail = bs_detail = f"semantic-compare crash: {e}"
+                if test_src is not None:
+                    fc_match = False
+                    fc_detail = f"semantic-compare crash: {e}"
+
     return ModuleMetrics(
         name=py_file.name,
         loc=loc,
@@ -466,6 +583,15 @@ def measure_module(py_file: Path) -> ModuleMetrics | None:
         signature_match=sig,
         declaration_match=decl,
         strict_match=strict,
+        bytecode_exact=bool(bx_match) if bx_match is not None else False,
+        bytecode_normalized=bool(bn_match) if bn_match is not None else False,
+        behavioral_smoke=bool(bs_match) if bs_match is not None else False,
+        bytecode_exact_detail=bx_detail or "",
+        bytecode_normalized_detail=bn_detail or "",
+        behavioral_smoke_detail=bs_detail or "",
+        edit_similarity=edit_sim,
+        functional_correctness=fc_match,
+        functional_correctness_detail=fc_detail,
         import_recall=import_recall,
         name_recall=name_recall,
         docstring_recall=docstring_recall,
@@ -495,27 +621,63 @@ def _format_pct(x: float) -> str:
 
 
 def _render_markdown(rows: list[ModuleMetrics], corpus_label: str) -> str:
+    # Show the semantic columns only when at least one row actually ran
+    # the comparators — keeps the table narrow on legacy ``--no-semantic``
+    # runs while still surfacing the axes on the default path.
+    show_sem = any(
+        (
+            r.bytecode_exact_detail
+            or r.bytecode_normalized_detail
+            or r.behavioral_smoke_detail
+        )
+        for r in rows
+    )
     lines: list[str] = []
     lines.append(f"### Recovery accuracy: {corpus_label}\n")
-    header = (
-        "| Module | LoC | Parses | Sig | Decl | Strict |"
-        " Names | Imports | Docstrings | Fns | Unknown | ms |"
-    )
+    if show_sem:
+        header = (
+            "| Module | LoC | Parses | Sig | Decl | Strict | BX | BN | BS |"
+            " Names | Imports | Docstrings | Fns | Unknown | ms |"
+        )
+        sep = (
+            "|---|---:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|---:|"
+            "---:|---:|---:|---:|---:|"
+        )
+    else:
+        header = (
+            "| Module | LoC | Parses | Sig | Decl | Strict |"
+            " Names | Imports | Docstrings | Fns | Unknown | ms |"
+        )
+        sep = "|---|---:|:--:|:--:|:--:|:--:|---:|---:|---:|---:|---:|---:|"
     lines.append(header)
-    lines.append("|---|---:|:--:|:--:|:--:|:--:|---:|---:|---:|---:|---:|---:|")
+    lines.append(sep)
     for r in rows:
         if r.error and not r.parses:
-            err_row = (
-                f"| `{r.name}` | {r.loc} | ❌ | ❌ | ❌ | ❌ | — | — | — |"
-                f" {r.function_count} | — | — |"
-            )
+            if show_sem:
+                err_row = (
+                    f"| `{r.name}` | {r.loc} | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | "
+                    f"— | — | — | {r.function_count} | — | — |"
+                )
+            else:
+                err_row = (
+                    f"| `{r.name}` | {r.loc} | ❌ | ❌ | ❌ | ❌ | — | — | — |"
+                    f" {r.function_count} | — | — |"
+                )
             lines.append(err_row)
             continue
+        sem_cells = (
+            f"{'✅' if r.bytecode_exact else '❌'} | "
+            f"{'✅' if r.bytecode_normalized else '❌'} | "
+            f"{'✅' if r.behavioral_smoke else '❌'} | "
+            if show_sem
+            else ""
+        )
         lines.append(
             f"| `{r.name}` | {r.loc} | {'✅' if r.parses else '❌'} | "
             f"{'✅' if r.signature_match else '❌'} | "
             f"{'✅' if r.declaration_match else '❌'} | "
             f"{'✅' if r.strict_match else '❌'} | "
+            f"{sem_cells}"
             f"{_format_pct(r.name_recall)} | "
             f"{_format_pct(r.import_recall)} | "
             f"{_format_pct(r.docstring_recall)} | "
@@ -529,11 +691,19 @@ def _render_markdown(rows: list[ModuleMetrics], corpus_label: str) -> str:
         n_sig = sum(1 for r in rows if r.signature_match)
         n_decl = sum(1 for r in rows if r.declaration_match)
         n_strict = sum(1 for r in rows if r.strict_match)
+        n_bx = sum(1 for r in rows if r.bytecode_exact)
+        n_bn = sum(1 for r in rows if r.bytecode_normalized)
+        n_bs = sum(1 for r in rows if r.behavioral_smoke)
 
         def mean(attr: str) -> float:
             vals = [getattr(r, attr) for r in parsed]
             return sum(vals) / len(vals) if vals else 0.0
 
+        sem_agg = (
+            f"{n_bx}/{len(rows)} | {n_bn}/{len(rows)} | {n_bs}/{len(rows)} | "
+            if show_sem
+            else ""
+        )
         lines.append(
             f"| **mean (N={len(rows)})** | "
             f"{sum(r.loc for r in rows)} | "
@@ -541,6 +711,7 @@ def _render_markdown(rows: list[ModuleMetrics], corpus_label: str) -> str:
             f"{n_sig}/{len(rows)} | "
             f"{n_decl}/{len(rows)} | "
             f"{n_strict}/{len(rows)} | "
+            f"{sem_agg}"
             f"{_format_pct(mean('name_recall'))} | "
             f"{_format_pct(mean('import_recall'))} | "
             f"{_format_pct(mean('docstring_recall'))} | "
@@ -606,6 +777,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Append a Mermaid chart to the markdown output.",
     )
+    parser.add_argument(
+        "--no-semantic",
+        action="store_true",
+        help=(
+            "Skip the three semantic axes (bytecode_exact,"
+            " bytecode_normalized, behavioral_smoke). Useful on large"
+            " corpora where the ~150 ms / module overhead matters."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.path.exists():
@@ -619,7 +799,7 @@ def main(argv: list[str] | None = None) -> int:
 
     rows: list[ModuleMetrics] = []
     for f in files:
-        m = measure_module(f)
+        m = measure_module(f, semantic=not args.no_semantic)
         if m is not None:
             rows.append(m)
 

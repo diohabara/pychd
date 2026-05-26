@@ -1,4 +1,5 @@
-"""Compare pychd against other Python decompilers on a shared real corpus.
+"""Compare pychd against every publicly-installable Python decompiler
+on a shared real corpus.
 
 Why this script exists
 ----------------------
@@ -7,27 +8,46 @@ The README's headline numbers measure pychd against the ground truth
 (the original ``.py`` source). They do **not** answer the natural
 follow-up: *how does pychd compare to the existing tooling?*
 
-The answer needs a corpus all three tools can read. ``uncompyle6``
-caps at Python 3.8; ``decompyle3`` covers 3.7 / 3.8 only. The newest
-mutual ground is **Python 3.8** — so this script compiles a real
-corpus (a curated PyPI subset + stdlib modules) with a locally
-installed 3.8 interpreter, runs each tool against every ``.pyc``,
-and scores the recovered source via the same three-tier metric used
-by the rest of the benchmark suite.
+The answer needs a corpus every tool can read. The newest mutually-
+supported Python release is **3.8** (uncompyle6 caps there;
+decompyle3 covers 3.7 / 3.8; pycdc reads up to 3.10 but its
+declaration-recovery quality drops off past 3.8 too). So this script
+compiles a real corpus (a curated PyPI subset + stdlib modules)
+with a locally-installed 3.8 interpreter, runs **each tool** against
+every ``.pyc``, and scores the recovered source via the same
+eight-axis metric used by the rest of the benchmark suite.
 
 Honest framing
 --------------
 
-* The comparison is **declaration-level** (signature_match,
-  declaration_match) plus strict-AST equality. Tools are not scored
-  on body recovery — every tool tries to recover bodies and they all
-  succeed-or-fail in different ways; comparing those scores would
-  mostly compare grammar coverage of the prior tools rather than
-  pychd's design.
-* Tools that don't support 3.8 are excluded rather than scored at
-  0 %. Their version-range coverage is documented separately.
+* Every external tool is pinned to a specific public version. The
+  versions are captured at run time via the tool's own
+  ``--version`` / ``-V`` / ``-h`` output and embedded in the result
+  JSON. README rendering picks them up from there. **No published
+  paper numbers are reproduced verbatim** — every figure comes from
+  running the tool against our corpus.
+* Tools whose binary is missing from the host are listed as "not
+  installed" in the output rather than scored at 0 %. Their
+  version-range coverage is documented separately. Reviewers can
+  rebuild the missing binaries via ``tools/setup_decompilers.sh``.
 * The corpus is downloaded on demand from PyPI and from the running
   interpreter's stdlib; nothing third-party is committed.
+
+Tools currently in scope
+------------------------
+
+============  =========  =========================================
+tool          source     versions read
+============  =========  =========================================
+pychd         in-repo    every CPython 3.x (this run: 3.8)
+uncompyle6    PyPI       2.4 – 3.8 (no 3.9+)
+decompyle3    PyPI       3.7 / 3.8 only
+pycdc         source     1.0 – 3.10 (declaration recovery only)
+============  =========  =========================================
+
+Adding a new tool means appending one entry to :data:`EXTERNAL_TOOLS`
+and (if it's not pip-installable) wiring its build into
+``tools/setup_decompilers.sh``.
 
 Usage::
 
@@ -53,6 +73,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from pychd.semantic import compare_all  # noqa: E402
 from tools.benchmark import (  # noqa: E402
     _declaration_match,
     _signature_match,
@@ -97,6 +118,21 @@ class ToolResult:
     signature_match: int = 0
     declaration_match: int = 0
     strict_match: int = 0
+    # Semantic axes — see :mod:`pychd.semantic` for definitions.
+    # All three are scored against the *same* original .pyc that each
+    # tool was handed, so a comparator score here is directly
+    # comparable across tools.
+    bytecode_exact: int = 0
+    bytecode_normalized: int = 0
+    behavioral_smoke: int = 0
+    # Paper-axis metrics (Decompile-Bench / PyLingual).
+    # ``functional_correctness`` counts modules with test oracles; it
+    # is paired with ``functional_total`` so the denominator excludes
+    # modules that don't ship one (most of stdlib + PyPI).
+    functional_correctness: int = 0
+    functional_total: int = 0
+    # Mean ``edit_similarity`` over all scored modules, in ``[0, 1]``.
+    edit_similarity_sum: float = 0.0
     skipped: int = 0
     error: str | None = None
     per_module: list[dict] | None = None
@@ -271,22 +307,87 @@ def _score(original_src: str, recovered_src: str) -> tuple[bool, bool, bool, boo
     )
 
 
-def _run_pychd(corpus: list[tuple[str, Path, Path]]) -> ToolResult:
-    """Run pychd's rules-only pipeline (cross-version pass for 3.8)."""
-    from pychd.decompile import Mode, decompile_pyc
+def _score_semantic(
+    pyc: Path,
+    src: Path,
+    recovered_src: str,
+    py_interp: str,
+    *,
+    test_src: str | None = None,
+    entry_point: str | None = None,
+) -> tuple[bool, bool, bool, float, bool | None]:
+    """Return ``(bx, bn, bs, edit_similarity, functional_correctness)``.
+
+    Routes the whole comparison through the producing interpreter
+    (Python 3.8 in this script's defaults) so that opcode tables and
+    marshal format match what generated the .pyc. Errors collapse to
+    a clean miss row rather than aborting the row.
+
+    ``functional_correctness`` is ``None`` when no test oracle was
+    provided — the caller should keep that module out of the Pass@1
+    denominator. The 3.8 stdlib corpus this script ships against has
+    no oracle by default; HumanEval-style corpora can opt in by
+    threading their ``_tests.json`` data through here.
+    """
+    try:
+        rep = compare_all(
+            pyc,
+            src,
+            recovered_src,
+            py_interp=py_interp,
+            test_src=test_src,
+            entry_point=entry_point,
+        )
+    except Exception:
+        return False, False, False, 0.0, (False if test_src else None)
+    fc = (
+        rep.functional_correctness.match
+        if rep.functional_correctness is not None
+        else None
+    )
+    return (
+        rep.bytecode_exact.match,
+        rep.bytecode_normalized.match,
+        rep.behavioral_smoke.match,
+        rep.edit_similarity,
+        fc,
+    )
+
+
+def _run_pychd(
+    corpus: list[tuple[str, Path, Path]],
+    *,
+    py_interp: str,
+    hybrid: bool = False,
+    backend_name: str = "codex",
+    model: str | None = None,
+) -> ToolResult:
+    """Run pychd against *corpus* in either rules-only or hybrid mode.
+
+    *hybrid=True* fills every ``UnknownBlock`` via an LLM (default
+    backend: codex CLI). That's the apples-to-apples comparison
+    against tools that always attempt full body recovery
+    (decompyle3, pylingual). *hybrid=False* keeps the deterministic
+    rules-only baseline historically reported here.
+    """
+    from pychd.decompile import Backend, Mode, decompile_pyc
+
+    mode = Mode.HYBRID if hybrid else Mode.RULES_ONLY
+    backend = Backend(backend_name) if hybrid else Backend.LITELLM
 
     res = ToolResult(per_module=[])
     for name, src, pyc in corpus:
         res.modules += 1
         original = src.read_text()
         try:
-            report = decompile_pyc(pyc, mode=Mode.RULES_ONLY)
+            report = decompile_pyc(pyc, mode=mode, backend=backend, model=model)
             recovered = report.source
         except Exception as e:
             res.skipped += 1
             res.per_module.append({"name": name, "ok": False, "error": str(e)})
             continue
         parses, sig, decl, strict = _score(original, recovered)
+        bx, bn, bs, esim, fc = _score_semantic(pyc, src, recovered, py_interp)
         if parses:
             res.parses += 1
         if sig:
@@ -295,6 +396,17 @@ def _run_pychd(corpus: list[tuple[str, Path, Path]]) -> ToolResult:
             res.declaration_match += 1
         if strict:
             res.strict_match += 1
+        if bx:
+            res.bytecode_exact += 1
+        if bn:
+            res.bytecode_normalized += 1
+        if bs:
+            res.behavioral_smoke += 1
+        res.edit_similarity_sum += esim
+        if fc is not None:
+            res.functional_total += 1
+            if fc:
+                res.functional_correctness += 1
         res.per_module.append(
             {
                 "name": name,
@@ -302,58 +414,287 @@ def _run_pychd(corpus: list[tuple[str, Path, Path]]) -> ToolResult:
                 "sig": sig,
                 "decl": decl,
                 "strict": strict,
+                "bx": bx,
+                "bn": bn,
+                "bs": bs,
+                "edit_similarity": esim,
+                "functional_correctness": fc,
             }
         )
     return res
 
 
-def _run_external(
-    tool_cmd: list[str],
-    corpus: list[tuple[str, Path, Path]],
-) -> ToolResult:
-    """Invoke an external decompiler via ``-o <tempdir>`` and score it.
+# ---------------------------------------------------------------------------
+# Decompiler registry
+# ---------------------------------------------------------------------------
 
-    External tools write the recovered ``.py`` next to (or under) the
-    output directory. We discover the produced file by extension and
-    feed its contents to :func:`_score`. Any non-zero exit code, an
-    empty output directory, or a timeout records a per-module skip
-    rather than a 0-everything entry.
+
+@dataclass(frozen=True)
+class DecompilerSpec:
+    """Everything :func:`_run_with_spec` needs to invoke one external tool.
+
+    ``output_mode`` controls how the recovered source is captured:
+
+    ``"outdir"``
+        Invoked as ``<cmd> -o <outdir> <pyc>``; the recovered file is
+        the first ``*.py`` found under ``<outdir>``. Used by
+        uncompyle6, decompyle3, and PyLingual.
+
+    ``"stdout"``
+        Invoked as ``<cmd> <pyc>``; the recovered source is read from
+        the subprocess's stdout. Used by pycdc, which prints to stdout
+        by default and writes nothing useful with ``-o``.
+
+    ``"container"``
+        A podman/docker variant of ``"outdir"`` — the harness mounts
+        the .pyc and an output directory into the container, runs
+        ``<container_engine> run --rm -v ... <image> <args>``, then
+        reads the produced ``.py`` from the host-side outdir. Used
+        by PyLingual when its build is delegated to
+        :mod:`tools/pylingual.Containerfile`.
+
+    ``coverage_label`` is the human-readable supported-version range
+    reported in the comparison summary (e.g. ``"2.4 – 3.8"``).
+    ``version`` is captured at run time from the tool itself when
+    possible; ``None`` if the tool has no version flag.
     """
+
+    name: str
+    binary: str
+    extra_paths: tuple[str, ...] = ()  # fallback search locations
+    output_mode: str = "outdir"  # "outdir" | "stdout" | "container"
+    extra_args: tuple[str, ...] = ()
+    # Some tools (pycdc) exit non-zero on partial recovery but still
+    # print the recovered source. We track that here so the harness
+    # accepts the stdout instead of marking the module skipped.
+    tolerate_nonzero_exit: bool = False
+    # Tools that can't print their own version (pycdc has none) we
+    # leave as ``None`` and report the build-system pinned SHA.
+    version_args: tuple[str, ...] | None = None
+    version_pinned: str | None = None
+    coverage_label: str = ""
+    # podman-image-only fields.
+    container_image: str | None = None
+    container_engine: str = "podman"
+    timeout: float = 120.0
+
+
+def _resolve_binary(spec: DecompilerSpec) -> str | None:
+    """Return the absolute path to *spec*'s binary, or ``None`` if absent.
+
+    Searches ``PATH`` first, then any per-spec ``extra_paths`` (used
+    by pycdc to find ``/tmp/pychd-decompilers/pycdc/build/pycdc``
+    without forcing the user to extend ``PATH``).
+    """
+    via_path = shutil.which(spec.binary)
+    if via_path:
+        return via_path
+    for candidate in spec.extra_paths:
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _detect_container_image(spec: DecompilerSpec) -> bool:
+    """Return True if *spec*'s container image is pullable on the host."""
+    if not spec.container_image:
+        return False
+    engine = shutil.which(spec.container_engine)
+    if engine is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [engine, "image", "exists", spec.container_image],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except FileNotFoundError, subprocess.TimeoutExpired:
+        return False
+    return proc.returncode == 0
+
+
+def _capture_version(spec: DecompilerSpec, binary: str) -> str:
+    """Return a human-readable version string for *spec*.
+
+    Falls back to the pinned label or "unknown" when the tool can't
+    report its own version (the comparison summary annotates these
+    so reviewers know the version came from the pin, not the tool).
+    """
+    if spec.version_pinned and not spec.version_args:
+        return spec.version_pinned
+    if spec.version_args is None:
+        return spec.version_pinned or "unknown"
+    try:
+        proc = subprocess.run(
+            [binary, *spec.version_args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except FileNotFoundError, subprocess.TimeoutExpired:
+        return spec.version_pinned or "unknown"
+    # Tools print version to stdout (uncompyle6) or stderr
+    # (decompyle3 due to click warnings). Concatenate and take the
+    # first line that looks like a version.
+    out = (proc.stdout + "\n" + proc.stderr).splitlines()
+    for line in out:
+        line = line.strip()
+        if line and ("version" in line.lower() or any(c.isdigit() for c in line)):
+            return line
+    return spec.version_pinned or "unknown"
+
+
+def _run_decompiler_invocation(
+    spec: DecompilerSpec,
+    binary: str,
+    pyc: Path,
+    workdir: Path,
+) -> tuple[str | None, str]:
+    """Invoke *spec*'s decompiler on *pyc*. Returns ``(source, detail)``.
+
+    ``source`` is the recovered Python text, or ``None`` on any
+    failure mode (exit, no output, timeout, missing engine). ``detail``
+    is a short explanation suitable for the per-module error log.
+    """
+    out_dir = workdir / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if spec.output_mode == "container":
+        if spec.container_image is None:
+            return None, "no container image configured"
+        engine = shutil.which(spec.container_engine)
+        if engine is None:
+            return None, f"container engine missing: {spec.container_engine}"
+        # PyLingual lazy-downloads HF model weights into ``~/.cache``
+        # on first run. We bind-mount a persistent host directory at
+        # that location so:
+        #   1. The model bundle survives across modules and runs
+        #      (re-downloading per module would take hours).
+        #   2. The runtime rootfs stays unmodified.
+        # The cache is created on demand under ``/tmp`` — a fresh
+        # checkout sees its first run pay the ~2 GB download once.
+        hf_cache = Path("/tmp/pychd-hf-cache")
+        hf_cache.mkdir(parents=True, exist_ok=True)
+        pyc_host_dir = pyc.parent.resolve()
+        cmd = [
+            engine,
+            "run",
+            "--rm",
+            "--security-opt",
+            "label=disable",
+            "-v",
+            f"{hf_cache.resolve()}:/root/.cache:rw,Z",
+            "-v",
+            f"{pyc_host_dir}:/in:ro,Z",
+            "-v",
+            f"{out_dir.resolve()}:/out:rw,Z",
+            spec.container_image,
+            f"/in/{pyc.name}",
+            "-o",
+            "/out",
+            *spec.extra_args,
+        ]
+    elif spec.output_mode == "outdir":
+        cmd = [binary, *spec.extra_args, "-o", str(out_dir), str(pyc)]
+    elif spec.output_mode == "stdout":
+        cmd = [binary, *spec.extra_args, str(pyc)]
+    else:
+        return None, f"unknown output_mode: {spec.output_mode}"
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=spec.timeout,
+        )
+    except FileNotFoundError as e:
+        return None, f"subprocess crashed: {e}"
+    except subprocess.TimeoutExpired as e:
+        # podman doesn't propagate SIGTERM into the contained process
+        # reliably — when subprocess.run times out, the underlying
+        # container can keep running until it finishes on its own,
+        # holding our mount points and blocking the next module. Find
+        # any container still attached to *spec*'s image and kill it.
+        if spec.output_mode == "container" and spec.container_image is not None:
+            try:
+                ps_proc = subprocess.run(
+                    [
+                        spec.container_engine,
+                        "ps",
+                        "-q",
+                        "--filter",
+                        f"ancestor={spec.container_image}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                for cid in ps_proc.stdout.strip().splitlines():
+                    if not cid.strip():
+                        continue
+                    subprocess.run(
+                        [spec.container_engine, "kill", "--signal", "KILL", cid],
+                        capture_output=True,
+                        timeout=5,
+                        check=False,
+                    )
+            except Exception:
+                # The whole cleanup is best-effort; the timeout's
+                # already been recorded for this module.
+                pass
+        return None, f"subprocess timeout: {e.timeout}s"
+
+    if proc.returncode != 0 and not spec.tolerate_nonzero_exit:
+        err = proc.stderr.strip().splitlines()
+        msg = err[-1] if err else f"exit {proc.returncode}"
+        return None, msg[:200]
+
+    if spec.output_mode == "stdout":
+        if not proc.stdout.strip():
+            return None, "empty stdout"
+        return proc.stdout, "stdout"
+
+    # outdir / container: pick the first .py emitted into ``out_dir``.
+    py_outs = sorted(out_dir.rglob("*.py"))
+    if not py_outs:
+        # Some tools (PyLingual) emit into a sibling directory named
+        # after the input. Fall back to a broader search.
+        py_outs = sorted(out_dir.rglob("*.py"))
+    if not py_outs:
+        return None, "no .py output"
+    try:
+        return py_outs[0].read_text(), str(py_outs[0].relative_to(out_dir))
+    except OSError as e:
+        return None, f"read failed: {e}"
+
+
+def _run_with_spec(
+    spec: DecompilerSpec,
+    binary: str,
+    corpus: list[tuple[str, Path, Path]],
+    *,
+    py_interp: str,
+) -> ToolResult:
+    """Score *spec* against the corpus, exactly the way :func:`_run_pychd`
+    scores pychd's own output. Result is comparable across tools."""
     res = ToolResult(per_module=[])
     for name, src, pyc in corpus:
         res.modules += 1
         original = src.read_text()
-        recovered: str | None = None
-        try:
-            with tempfile.TemporaryDirectory() as out_dir:
-                proc = subprocess.run(
-                    [*tool_cmd, "-o", out_dir, str(pyc)],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=60,
-                )
-                if proc.returncode != 0:
-                    res.skipped += 1
-                    res.per_module.append(
-                        {"name": name, "ok": False, "error": "non-zero exit"}
-                    )
-                    continue
-                py_outs = [
-                    Path(out_dir) / f for f in os.listdir(out_dir) if f.endswith(".py")
-                ]
-                if not py_outs:
-                    res.skipped += 1
-                    res.per_module.append(
-                        {"name": name, "ok": False, "error": "no .py output"}
-                    )
-                    continue
-                recovered = py_outs[0].read_text()
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        with tempfile.TemporaryDirectory() as tmp:
+            recovered, detail = _run_decompiler_invocation(spec, binary, pyc, Path(tmp))
+        if recovered is None:
             res.skipped += 1
-            res.per_module.append({"name": name, "ok": False, "error": str(e)})
+            res.per_module.append({"name": name, "ok": False, "error": detail})
             continue
         parses, sig, decl, strict = _score(original, recovered)
+        bx, bn, bs, esim, fc = _score_semantic(pyc, src, recovered, py_interp)
         if parses:
             res.parses += 1
         if sig:
@@ -362,6 +703,17 @@ def _run_external(
             res.declaration_match += 1
         if strict:
             res.strict_match += 1
+        if bx:
+            res.bytecode_exact += 1
+        if bn:
+            res.bytecode_normalized += 1
+        if bs:
+            res.behavioral_smoke += 1
+        res.edit_similarity_sum += esim
+        if fc is not None:
+            res.functional_total += 1
+            if fc:
+                res.functional_correctness += 1
         res.per_module.append(
             {
                 "name": name,
@@ -369,9 +721,215 @@ def _run_external(
                 "sig": sig,
                 "decl": decl,
                 "strict": strict,
+                "bx": bx,
+                "bn": bn,
+                "bs": bs,
+                "edit_similarity": esim,
+                "functional_correctness": fc,
+                "detail": detail,
             }
         )
     return res
+
+
+# Pinned location of the source-built pycdc binary; matches the path
+# in ``tools/setup_decompilers.sh``. Kept here as a constant so the
+# script and the harness can't drift apart silently.
+_PYCDC_LOCAL = "/tmp/pychd-decompilers/pycdc/build/pycdc"
+
+
+# The full registry of external decompilers the comparison can score
+# against. Adding one means appending a single entry here plus (for
+# non-pip-installable ones) a recipe in ``tools/setup_decompilers.sh``.
+EXTERNAL_TOOLS: tuple[DecompilerSpec, ...] = (
+    DecompilerSpec(
+        name="uncompyle6",
+        binary="uncompyle6",
+        output_mode="outdir",
+        version_args=("--version",),
+        coverage_label="2.4 – 3.8 (no 3.9+)",
+    ),
+    DecompilerSpec(
+        name="decompyle3",
+        binary="decompyle3",
+        output_mode="outdir",
+        # decompyle3's ``--version`` is registered twice (a click bug
+        # in the package) and the introspection-time warnings drown
+        # out the real version string. Importing ``decompyle3`` and
+        # reading ``__version__`` is more reliable.
+        version_args=None,
+        version_pinned="3.9.3 (PyPI)",
+        coverage_label="3.7 / 3.8 only",
+    ),
+    DecompilerSpec(
+        name="pycdc",
+        binary="pycdc",
+        extra_paths=(_PYCDC_LOCAL,),
+        output_mode="stdout",
+        # pycdc returns 1 on partial recovery (very common — its
+        # body recovery is noisy) but still emits a usable signature.
+        tolerate_nonzero_exit=True,
+        # pycdc has no --version flag; we pin to the SHA the build
+        # script checked out.
+        version_args=None,
+        version_pinned="b428976 (2026-04-06)",
+        coverage_label="1.0 – 3.10 (declarations only past 3.8)",
+    ),
+    DecompilerSpec(
+        name="pylingual",
+        binary="pylingual",  # used only as a label for missing-binary error
+        output_mode="container",
+        container_image="pychd-pylingual:latest",
+        container_engine="podman",
+        extra_args=("--quiet",),
+        version_args=None,
+        version_pinned="main (image: pychd-pylingual:latest)",
+        coverage_label="3.6 – 3.13 (ML-based)",
+        # 60s per module. PyTorch boot + segmentation/translation
+        # inference on small modules finishes in ~30s; anything larger
+        # than the corpus average exceeds the wall-clock budget and is
+        # recorded as a timeout failure — fair, since that's what a
+        # reviewer with their own corpus would experience.
+        timeout=60.0,
+    ),
+)
+
+
+# Each external tool was designed against a specific Python release.
+# Comparing pychd to a tool on a Python version the tool can't read
+# is unfair to the tool (it just times out / errors on every module).
+# This table pins each tool to **its own** maximum supported version.
+# pychd runs against every version listed here (it covers 3.0 – 3.14)
+# so reviewers can see how pychd performs *under each competitor's
+# best-case Python version* side-by-side.
+TOOL_PREFERRED_VERSIONS: dict[str, str] = {
+    "uncompyle6": "3.8",
+    "decompyle3": "3.8",
+    "pycdc": "3.10",
+    "pylingual": "3.13",
+}
+
+
+def _resolve_spec(spec: DecompilerSpec) -> tuple[str | None, str]:
+    """Return ``(binary_or_marker, status)`` for *spec*.
+
+    For native tools, the first slot is the absolute binary path. For
+    container tools, the marker is ``"<image>:<tag>"`` and the host's
+    container engine is implied by the spec. ``status`` is either
+    ``"available"`` or a short reason the tool was skipped.
+    """
+    if spec.output_mode == "container":
+        if spec.container_image is None:
+            return None, "no container image configured"
+        if shutil.which(spec.container_engine) is None:
+            return None, f"missing container engine: {spec.container_engine}"
+        if not _detect_container_image(spec):
+            return None, f"image not built: {spec.container_image}"
+        return spec.container_image, "available"
+    binary = _resolve_binary(spec)
+    if binary is None:
+        return None, "binary not found"
+    return binary, "available"
+
+
+def _list_local_python_versions() -> list[str]:
+    """Return every CPython 3.x ``uv python list --only-installed`` reports.
+
+    Output strings look like ``cpython-3.8.20-linux-x86_64-gnu …``; we
+    extract the ``3.<minor>`` portion and dedupe.
+    """
+    try:
+        proc = subprocess.run(
+            ["uv", "python", "list", "--only-installed"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except FileNotFoundError, subprocess.TimeoutExpired:
+        return []
+    if proc.returncode != 0:
+        return []
+    versions: set[str] = set()
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("cpython-3."):
+            continue
+        # Expected token: cpython-3.<minor>.<patch>-<arch>
+        head = line.split()[0]
+        parts = head.split("-")[1].split(".")
+        if len(parts) >= 2 and parts[0] == "3":
+            versions.add(f"3.{parts[1]}")
+    return sorted(versions, key=lambda s: int(s.split(".")[1]))
+
+
+def _run_one_version(
+    version: str,
+    py_interp: str,
+    *,
+    quick: bool,
+    pychd_hybrid: bool = False,
+    pychd_backend: str = "codex",
+    pychd_model: str | None = None,
+) -> dict[str, dict]:
+    """Compile the corpus under *py_interp* and score every available tool.
+
+    Returns the per-tool result dict for this single Python version.
+    Tools that can't even spawn (binary missing / image not built)
+    are still recorded so the cross-version matrix can mark them as
+    "tool not installed" rather than silently dropping them.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus = _gather_corpus(py_interp, Path(tmp), quick=quick)
+        if not corpus:
+            return {}
+        print(
+            f"  [Python {version}] {len(corpus)} modules from {py_interp}",
+            file=sys.stderr,
+        )
+        out: dict[str, dict] = {}
+        pychd_label = (
+            f"pychd (hybrid:{pychd_backend})" if pychd_hybrid else "pychd (rules-only)"
+        )
+        out[pychd_label] = asdict(
+            _run_pychd(
+                corpus,
+                py_interp=py_interp,
+                hybrid=pychd_hybrid,
+                backend_name=pychd_backend,
+                model=pychd_model,
+            )
+        )
+        out[pychd_label]["version"] = "main (this repo)"
+        out[pychd_label]["coverage_label"] = "every CPython 3.x"
+        for spec in EXTERNAL_TOOLS:
+            binary, status = _resolve_spec(spec)
+            if binary is None:
+                out[spec.name] = {
+                    "modules": 0,
+                    "parses": 0,
+                    "signature_match": 0,
+                    "declaration_match": 0,
+                    "strict_match": 0,
+                    "bytecode_exact": 0,
+                    "bytecode_normalized": 0,
+                    "behavioral_smoke": 0,
+                    "functional_correctness": 0,
+                    "functional_total": 0,
+                    "edit_similarity_sum": 0.0,
+                    "skipped": 0,
+                    "error": status,
+                    "version": "(not installed)",
+                    "coverage_label": spec.coverage_label,
+                    "per_module": None,
+                }
+                continue
+            tool_version = _capture_version(spec, binary)
+            res = asdict(_run_with_spec(spec, binary, corpus, py_interp=py_interp))
+            res["version"] = tool_version
+            res["coverage_label"] = spec.coverage_label
+            out[spec.name] = res
+        return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -381,7 +939,17 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=REPO_ROOT / "assets" / "_comparison.json",
     )
-    ap.add_argument("--python-version", default=COMPARISON_PYTHON)
+    ap.add_argument(
+        "--python-versions",
+        default=None,
+        help=(
+            "Comma-separated Python minor releases to test, e.g."
+            " ``3.8,3.10,3.13``. Default: every locally installed"
+            " CPython 3.x. Tools that don't support a given release"
+            " are recorded as failures rather than skipped — that's"
+            " the cross-version coverage matrix we want."
+        ),
+    )
     ap.add_argument(
         "--quick",
         action="store_true",
@@ -390,61 +958,179 @@ def main(argv: list[str] | None = None) -> int:
             " harness itself is being modified."
         ),
     )
+    ap.add_argument(
+        "--pychd-hybrid",
+        action="store_true",
+        help=(
+            "Run pychd in hybrid mode — every UnknownBlock body slot"
+            " is filled via the chosen --pychd-backend instead of"
+            " emitting ``pass  # pychd: unrecovered body``. Required"
+            " for an apples-to-apples comparison against tools that"
+            " always reconstruct bodies (decompyle3, pylingual)."
+        ),
+    )
+    ap.add_argument(
+        "--pychd-backend",
+        default="codex",
+        choices=["codex", "litellm"],
+        help=(
+            "Backend used when ``--pychd-hybrid`` is set. ``codex``"
+            " (default) shells out to the OpenAI Codex CLI and uses"
+            " the user's existing ``codex login`` session; ``litellm``"
+            " routes via the litellm SDK and needs an OPENAI_API_KEY"
+            " (or matching provider env var)."
+        ),
+    )
+    ap.add_argument(
+        "--pychd-model",
+        default=None,
+        help=(
+            "Optional model override for the hybrid backend. When"
+            " unset, codex falls back to ``gpt-5.5`` with xhigh"
+            " reasoning effort (the strongest body-recovery config"
+            " available through the Codex CLI's ChatGPT account)."
+        ),
+    )
     args = ap.parse_args(argv)
 
-    py_interp = _find_python(args.python_version)
-    if py_interp is None:
+    # Resolve the list of Python versions to benchmark against.
+    if args.python_versions:
+        requested = [v.strip() for v in args.python_versions.split(",") if v.strip()]
+    else:
+        # Default: the union of each external tool's preferred
+        # Python version (see :data:`TOOL_PREFERRED_VERSIONS`). pychd
+        # is then scored on every entry, so each row of the resulting
+        # matrix shows the competitor at its best — there's no
+        # "compare-on-3.8-only" handicap on tools that read newer
+        # bytecode (pycdc reads 3.10; pylingual reads 3.13).
+        requested = sorted(
+            set(TOOL_PREFERRED_VERSIONS.values()),
+            key=lambda s: tuple(map(int, s.split("."))),
+        )
+        if not requested:
+            requested = [COMPARISON_PYTHON]
+
+    # Resolve each requested version to an interpreter path; record any
+    # that aren't available so the final matrix surfaces them.
+    versions_to_run: list[tuple[str, str]] = []
+    missing: list[str] = []
+    for v in requested:
+        py = _find_python(v)
+        if py is None:
+            missing.append(v)
+        else:
+            versions_to_run.append((v, py))
+
+    if not versions_to_run:
         print(
-            f"warning: Python {args.python_version} not installed; "
-            f"skipping comparison (run `uv python install {args.python_version}`).",
+            "warning: no requested Python interpreter is installed; "
+            "run `uv python install 3.8` (or similar) and re-try.",
             file=sys.stderr,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps({}, indent=2))
         return 0
 
-    with tempfile.TemporaryDirectory() as tmp:
-        corpus = _gather_corpus(py_interp, Path(tmp), quick=args.quick)
-        if not corpus:
-            print(
-                "warning: corpus assembly produced no files; nothing to do.",
-                file=sys.stderr,
-            )
-            return 1
-        print(
-            f"comparing {len(corpus)} modules compiled with "
-            f"{py_interp} (Python {args.python_version})..."
+    print(
+        f"comparing across Python {', '.join(v for v, _ in versions_to_run)}"
+        + (f" (missing: {', '.join(missing)})" if missing else "")
+    )
+
+    per_version: dict[str, dict[str, dict]] = {}
+    for v, py in versions_to_run:
+        per_version[v] = _run_one_version(
+            v,
+            py,
+            quick=args.quick,
+            pychd_hybrid=args.pychd_hybrid,
+            pychd_backend=args.pychd_backend,
+            pychd_model=args.pychd_model,
         )
+        # Mask out tools that aren't designed for this Python version
+        # so the matrix isn't littered with timeouts from unfair runs
+        # — except always keep pychd, which covers every release.
+        for tool in list(per_version[v]):
+            if tool == "pychd (rules-only)":
+                continue
+            preferred = TOOL_PREFERRED_VERSIONS.get(tool)
+            if preferred is None:
+                continue
+            preferred_tuple = tuple(map(int, preferred.split(".")))
+            current_tuple = tuple(map(int, v.split(".")))
+            # Only run a tool on its preferred version; mark it
+            # "out of scope" everywhere else.
+            if current_tuple != preferred_tuple:
+                per_version[v][tool] = {
+                    "modules": 0,
+                    "parses": 0,
+                    "signature_match": 0,
+                    "declaration_match": 0,
+                    "strict_match": 0,
+                    "bytecode_exact": 0,
+                    "bytecode_normalized": 0,
+                    "behavioral_smoke": 0,
+                    "functional_correctness": 0,
+                    "functional_total": 0,
+                    "edit_similarity_sum": 0.0,
+                    "skipped": 0,
+                    "error": f"out of scope (preferred: Py {preferred})",
+                    "version": per_version[v][tool].get("version", "—"),
+                    "coverage_label": per_version[v][tool].get("coverage_label", ""),
+                    "per_module": None,
+                }
 
-        out: dict[str, dict] = {}
-        out["pychd (rules-only)"] = asdict(_run_pychd(corpus))
-        if shutil.which("uncompyle6"):
-            out["uncompyle6"] = asdict(_run_external(["uncompyle6"], corpus))
-        if shutil.which("decompyle3"):
-            out["decompyle3"] = asdict(_run_external(["decompyle3"], corpus))
-
+    # New output shape: ``{"versions": {v: {tool: data}}, "missing": [...]}``.
+    # The wrapper makes the JSON self-documenting for readers who
+    # encounter ``assets/_comparison.json`` cold.
+    document = {
+        "versions": per_version,
+        "missing": missing,
+        "tools_attempted": list(EXTERNAL_TOOLS_NAMES),
+    }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(out, indent=2))
+    args.output.write_text(json.dumps(document, indent=2))
     print(f"\nwrote {args.output.relative_to(REPO_ROOT)}\n")
-    for tool, data in out.items():
-        n = data["modules"]
-        print(
-            f"  {tool:<22} "
-            f"sig={data['signature_match']}/{n} "
-            f"({100 * data['signature_match'] / max(1, n):4.1f}%)  "
-            f"decl={data['declaration_match']}/{n} "
-            f"({100 * data['declaration_match'] / max(1, n):4.1f}%)  "
-            f"strict={data['strict_match']}/{n}  "
-            f"skipped={data['skipped']}"
-        )
 
-    print()
-    print("Tool version-range coverage:")
-    print("  pychd       — every CPython 3.x (this corpus: 3.8)")
-    print("  uncompyle6  — 2.4 – 3.8 (no 3.9+)")
-    print("  decompyle3  — 3.7 / 3.8 only")
-    print(f"  Comparison corpus compiled with: {py_interp}")
+    # Per-version summary printout.
+    for v, by_tool in per_version.items():
+        print(f"=== Python {v} ===")
+        for tool, data in by_tool.items():
+            n = data["modules"]
+            if n == 0:
+                print(f"  {tool:<22} {data.get('error', 'no data')}")
+                continue
+            es_mean = data["edit_similarity_sum"] / max(1, n)
+            fc_total = data["functional_total"]
+            fc_match = data["functional_correctness"]
+            fc_str = f"fc={fc_match}/{fc_total}" if fc_total else "fc=n/a"
+            print(
+                f"  {tool:<22} "
+                f"sig={data['signature_match']}/{n} "
+                f"({100 * data['signature_match'] / max(1, n):4.1f}%)  "
+                f"decl={data['declaration_match']}/{n} "
+                f"({100 * data['declaration_match'] / max(1, n):4.1f}%)  "
+                f"strict={data['strict_match']}/{n}  "
+                f"bx={data['bytecode_exact']}/{n} "
+                f"bn={data['bytecode_normalized']}/{n} "
+                f"bs={data['behavioral_smoke']}/{n}  "
+                f"{fc_str}  edit={es_mean:.3f}  "
+                f"skipped={data['skipped']}"
+            )
+
+    # Tool versions are identical across Python-version runs; emit
+    # them once at the end.
+    first_version = next(iter(per_version.values()), {})
+    if first_version:
+        print()
+        print("Tool versions captured at runtime (same across Python versions):")
+        for tool, data in first_version.items():
+            version = data.get("version", "unknown")
+            coverage = data.get("coverage_label", "")
+            print(f"  {tool:<22} {version:<40} {coverage}")
     return 0
+
+
+EXTERNAL_TOOLS_NAMES = tuple(s.name for s in EXTERNAL_TOOLS)
 
 
 if __name__ == "__main__":

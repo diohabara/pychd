@@ -32,7 +32,10 @@ import dis
 import io
 import logging
 import marshal
+import shutil
+import subprocess
 import sys
+import tempfile
 import textwrap
 from dataclasses import dataclass
 from enum import Enum
@@ -53,6 +56,30 @@ class Mode(str, Enum):
     HYBRID = "hybrid"
     RULES_ONLY = "rules-only"
     LLM_ONLY = "llm-only"
+
+
+class Backend(str, Enum):
+    """Which inference backend the hybrid / llm-only paths should use.
+
+    Two backends are shipped:
+
+    * ``LITELLM`` — the historical default. Routes via the
+      :mod:`litellm` Python SDK; works against any provider litellm
+      supports (OpenAI, Anthropic, Google, local Ollama, …) and reads
+      credentials from the standard environment variables.
+    * ``CODEX`` — invokes the OpenAI Codex CLI (``codex exec``) as a
+      subprocess. The CLI handles its own auth via the user's prior
+      ``codex login``, runs without an explicit API key on this host,
+      and inherits whichever model the user has configured in
+      ``~/.codex/config.toml``.
+
+    The split exists so reviewers who only have a Codex login (no
+    OpenAI/Anthropic API key) can still drive the hybrid body-fill
+    path end-to-end.
+    """
+
+    LITELLM = "litellm"
+    CODEX = "codex"
 
 
 @dataclass
@@ -221,46 +248,155 @@ def _llm_decompile_chunk(
     return generated_text
 
 
+_BODY_FILL_PROMPT = textwrap.dedent(
+    """\
+    You are a Python decompiler.
+    The following Python {version_str} bytecode is the body of:
+        {signature}
+    Reconstruct the original Python source for *just the body*,
+    as one or more statements, indented with 4 spaces.
+    Do not include the `def` / `async def` / `class` header line.
+    Do not include surrounding triple-quoted fences.
+    Output only the body lines.
+
+    ```
+    {disassembly}
+    ```
+    """
+)
+
+
 def _llm_fill_body(
     signature: str,
     disassembly: str,
     version_tuple: tuple,
-    model: ModelType,
+    model: ModelType | None,
+    backend: "Backend | None" = None,
 ) -> str:
-    """Ask the LLM to reconstruct a single function/method body."""
-    version_str = f"{version_tuple[0]}.{version_tuple[1]}"
-    user_prompt = textwrap.dedent(
-        f"""\
-        You are a Python decompiler.
-        The following Python {version_str} bytecode is the body of:
-            {signature}
-        Reconstruct the original Python source for *just the body*,
-        as one or more statements, indented with 4 spaces.
-        Do not include the `def` / `async def` / `class` header line.
-        Do not include surrounding triple-quoted fences.
-        Output only the body lines.
+    """Ask the configured LLM backend to reconstruct one function body.
 
-        ```
-        {disassembly}
-        ```
-        """
+    The litellm path is the historical default — every provider with a
+    litellm adapter (OpenAI, Anthropic, Google, …) routes through it.
+    The codex path shells out to ``codex exec`` so reviewers with a
+    Codex login but no direct API key can still run the hybrid
+    body-fill end-to-end.
+    """
+    version_str = f"{version_tuple[0]}.{version_tuple[1]}"
+    user_prompt = _BODY_FILL_PROMPT.format(
+        version_str=version_str,
+        signature=signature,
+        disassembly=disassembly,
     )
-    response = completion(  # pyrefly: ignore[not-callable]
-        model=model,
-        temperature=0.2,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-    text: str = response.choices[0].message.content
+    if backend is None:
+        backend = Backend.LITELLM
+    if backend == Backend.CODEX:
+        text = _codex_fill_body(user_prompt, model)
+    else:
+        response = completion(  # pyrefly: ignore[not-callable]
+            model=model,
+            temperature=0.2,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        text = response.choices[0].message.content
     return _clean_llm_body(text, signature)
 
 
+# Codex defaults for the body-fill prompt. Reviewers wanted the
+# strongest model the Codex CLI exposes — ``gpt-5.5`` with extra-high
+# reasoning effort. The latter is set via the per-call ``-c
+# model_reasoning_effort='"xhigh"'`` override so the Codex CLI's own
+# ``~/.codex/config.toml`` stays unmodified. The model can still be
+# overridden by passing an explicit ``model`` argument (or by
+# configuring a Codex CLI profile).
+_CODEX_DEFAULT_MODEL = "gpt-5.5"
+_CODEX_DEFAULT_REASONING = "xhigh"
+
+
+def _codex_fill_body(prompt: str, model: ModelType | None) -> str:
+    """Invoke the Codex CLI as a subprocess and capture its response.
+
+    Codex emits status / event lines on stdout and writes the agent's
+    final message to the file given via ``-o``. We use ``--ephemeral``
+    + ``--skip-git-repo-check`` so each call is stateless and works
+    from any host directory. The sandbox is set to ``read-only`` —
+    body-fill should never need to run commands, write files, or
+    touch the network beyond the model call itself.
+
+    When no *model* is given we fall back to :data:`_CODEX_DEFAULT_MODEL`
+    + :data:`_CODEX_DEFAULT_REASONING` — currently ``gpt-5.5`` with
+    extra-high reasoning effort, which the user picked as the strongest
+    body-recovery configuration available through the Codex CLI's
+    ChatGPT account auth path.
+    """
+    binary = shutil.which("codex")
+    if binary is None:
+        raise RuntimeError(
+            "codex CLI not found in PATH; install it from "
+            "https://github.com/openai/codex"
+        )
+    with tempfile.NamedTemporaryFile(
+        suffix=".txt", mode="w+", delete=False
+    ) as out_file:
+        out_path = out_file.name
+    try:
+        cmd = [
+            binary,
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "--color",
+            "never",
+            "-o",
+            out_path,
+            # Pin the strongest reasoning tier; overridden if the
+            # caller's Codex profile already requests another effort.
+            "-c",
+            f'model_reasoning_effort="{_CODEX_DEFAULT_REASONING}"',
+        ]
+        model_to_use = str(model) if model is not None else _CODEX_DEFAULT_MODEL
+        cmd.extend(["-m", model_to_use])
+        cmd.append(prompt)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=240,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"codex exec exited {proc.returncode}: {proc.stderr.strip()[:500]}"
+            )
+        try:
+            with open(out_path, encoding="utf-8") as fh:
+                return fh.read()
+        except OSError as e:
+            raise RuntimeError(f"codex output file missing: {e}") from e
+    finally:
+        try:
+            Path(out_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _clean_llm_body(text: str, signature: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
+    # Trim only trailing whitespace; the *leading* indentation has
+    # to survive intact so :func:`_reindent_to_four_spaces` can do
+    # its uniform-dedent. A naive ``str.strip`` here would knock the
+    # first line down to column 0 and force the rest of the body to
+    # appear over-indented relative to it.
+    text = text.rstrip()
+    # If the model wrapped the output in a triple-backtick fence
+    # (most are explicitly told not to, but some still do) the
+    # opening ``` is at column 0; strip those *lines* without
+    # touching body indentation.
+    if text.lstrip().startswith("```"):
         lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
+        while lines and lines[0].lstrip().startswith("```"):
             lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
+        while lines and lines[-1].lstrip().startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines)
     sig_prefix = signature.split("(")[0].strip()
@@ -269,7 +405,65 @@ def _clean_llm_body(text: str, signature: str) -> str:
         if sig_prefix and line.strip().startswith(sig_prefix):
             continue
         cleaned_lines.append(line)
-    return "\n".join(cleaned_lines).rstrip()
+    cleaned = "\n".join(cleaned_lines).rstrip()
+    # Strip a leading docstring if the LLM re-emitted one — the rule
+    # pass already captured the original from ``co_consts[0]``, so
+    # keeping the LLM's duplicate would produce ``def foo(): \n
+    # """docstring""" \n """docstring""" \n body``.
+    cleaned = _strip_leading_docstring(cleaned)
+    # Normalise to a single 4-space indent: strong models often
+    # emit the body with the surrounding ``def`` block's indentation
+    # (8 spaces deep when inside a class). The rule-pass renderer
+    # then concatenates that with its own 4-space indent and the
+    # result fails ``ast.parse`` with an "unexpected indent".
+    cleaned = _reindent_to_four_spaces(cleaned)
+    return cleaned
+
+
+def _reindent_to_four_spaces(body: str) -> str:
+    """Strip every line back to the function-body root indent.
+
+    The :class:`pychd.ir.RawStatement` renderer adds the surrounding
+    function's own indent on top of whatever the body text contains.
+    So *body* should be returned with **no** leading indentation —
+    just the dedented statement sequence. Strong models often emit
+    the body with the enclosing ``def`` block's indentation already
+    baked in (4 – 8 spaces); we run :func:`textwrap.dedent` to peel
+    those off uniformly so the final output has exactly one indent
+    level (the renderer's own).
+    """
+    if not body.strip():
+        return body
+    expanded = "\n".join(line.expandtabs(4) for line in body.splitlines())
+    dedented = textwrap.dedent(expanded)
+    return dedented.rstrip()
+
+
+def _strip_leading_docstring(body: str) -> str:
+    """Drop a leading triple-quoted string from *body* (with its
+    surrounding indent) if present. Whitespace-only lines before the
+    docstring are preserved so the remaining body's indentation is
+    untouched."""
+    lines = body.splitlines()
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines):
+        return body
+    stripped = lines[i].lstrip()
+    for quote in ('"""', "'''"):
+        if not stripped.startswith(quote):
+            continue
+        # Single-line docstring: ``"""hello"""``.
+        rest = stripped[len(quote) :]
+        if quote in rest:
+            return "\n".join(lines[i + 1 :])
+        # Multi-line — find the closing quote.
+        for j in range(i + 1, len(lines)):
+            if quote in lines[j]:
+                return "\n".join(lines[j + 1 :])
+        return body
+    return body
 
 
 def decompile_disassembled_pyc(
@@ -296,18 +490,20 @@ def decompile_disassembled_pyc(
 def _fill_module_with_llm(
     module: ir.Module,
     version_tuple: tuple,
-    model: ModelType,
+    model: ModelType | None,
+    backend: Backend = Backend.LITELLM,
 ) -> int:
     calls = 0
     for stmt in module.body:
-        calls += _fill_stmt_with_llm(stmt, version_tuple, model)
+        calls += _fill_stmt_with_llm(stmt, version_tuple, model, backend)
     return calls
 
 
 def _fill_stmt_with_llm(
     stmt: ir.Stmt,
     version_tuple: tuple,
-    model: ModelType,
+    model: ModelType | None,
+    backend: Backend = Backend.LITELLM,
 ) -> int:
     if isinstance(stmt, (ir.FunctionDef, ir.ClassDef)):
         calls = 0
@@ -317,13 +513,15 @@ def _fill_stmt_with_llm(
                 sig = inner.signature or (
                     f"<{type(stmt).__name__}.{getattr(stmt, 'name', '?')}>"
                 )
-                body_src = _llm_fill_body(sig, inner.disassembly, version_tuple, model)
+                body_src = _llm_fill_body(
+                    sig, inner.disassembly, version_tuple, model, backend
+                )
                 if not body_src.strip():
                     body_src = "pass"
                 new_body.append(ir.RawStatement(source=body_src))
                 calls += 1
             elif isinstance(inner, (ir.FunctionDef, ir.ClassDef)):
-                calls += _fill_stmt_with_llm(inner, version_tuple, model)
+                calls += _fill_stmt_with_llm(inner, version_tuple, model, backend)
                 new_body.append(inner)
             else:
                 new_body.append(inner)
@@ -337,6 +535,7 @@ def decompile_pyc(
     *,
     mode: Mode = Mode.HYBRID,
     model: ModelType | None = None,
+    backend: Backend = Backend.LITELLM,
 ) -> DecompileReport:
     """Decompile a single .pyc to source according to *mode*.
 
@@ -395,9 +594,13 @@ def decompile_pyc(
     unknowns = module.unknown_blocks()
     llm_calls = 0
     if mode == Mode.HYBRID and unknowns:
-        if model is None:
+        # The codex backend handles auth via ``codex login`` rather
+        # than an OPENAI_API_KEY env var, so the ``model`` argument is
+        # optional for that path (defaults to the model the user has
+        # configured in ``~/.codex/config.toml``).
+        if model is None and backend != Backend.CODEX:
             raise ValueError("hybrid mode requires a model when unknown blocks remain")
-        llm_calls = _fill_module_with_llm(module, version_tuple, model)
+        llm_calls = _fill_module_with_llm(module, version_tuple, model, backend)
 
     return DecompileReport(
         source=module.render(),
@@ -450,6 +653,7 @@ def decompile(
     model: ModelType | None,
     *,
     mode: Mode = Mode.HYBRID,
+    backend: Backend = Backend.LITELLM,
 ) -> None:
     """Backward-compatible entry point.
 
@@ -461,11 +665,13 @@ def decompile(
     if to_decompile.is_dir():
         if output_path is None:
             output_path = to_decompile.parent / (to_decompile.name + ".decompiled")
-        _decompile_tree(to_decompile, output_path, model=model, mode=mode)
+        _decompile_tree(
+            to_decompile, output_path, model=model, mode=mode, backend=backend
+        )
         return
 
     pyc_file = _ensure_pyc(to_decompile)
-    report = decompile_pyc(pyc_file, mode=mode, model=model)
+    report = decompile_pyc(pyc_file, mode=mode, model=model, backend=backend)
     logging.info(
         f"Decompiled with mode={report.mode.value}, "
         f"confidence={report.rule_confidence}, "
@@ -505,6 +711,7 @@ def _decompile_tree(
     *,
     model: ModelType | None,
     mode: Mode,
+    backend: Backend = Backend.LITELLM,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     pycs = _iter_input_pycs(src_dir)
@@ -531,7 +738,7 @@ def _decompile_tree(
 
     for pyc in pycs:
         try:
-            report = decompile_pyc(pyc, mode=mode, model=model)
+            report = decompile_pyc(pyc, mode=mode, model=model, backend=backend)
         except Exception as e:
             logging.error(f"Failed to decompile {pyc}: {e}")
             continue

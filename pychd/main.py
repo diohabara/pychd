@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 
 from pychd import compile, decompile
-from pychd.decompile import Mode
+from pychd.decompile import Backend, Mode
 from pychd.validate import validate, validate_directory
 
 
@@ -46,11 +46,24 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Model to use when the LLM is invoked. Examples: "
             "`gpt-4o`, `claude-sonnet-4-5`, `ollama/llama3`. "
-            "Required unless --rules-only is set."
+            "Required unless --rules-only is set or --backend codex "
+            "(in which case the codex CLI's configured model is used)."
         ),
         type=str,
         required=False,
         default="ollama/deepseek-r1",
+    )
+    parser_decompile.add_argument(
+        "--backend",
+        help=(
+            "Inference backend for hybrid / llm-only body fill. "
+            "`litellm` (default) routes via the litellm SDK and reads "
+            "credentials from the standard provider env vars. "
+            "`codex` shells out to the OpenAI Codex CLI (`codex exec`) "
+            "and uses the user's existing `codex login` session."
+        ),
+        choices=[b.value for b in Backend],
+        default=Backend.LITELLM.value,
     )
 
     parser_compile = subparsers.add_parser(
@@ -108,12 +121,18 @@ def cli(args: argparse.Namespace) -> None:
         to_decompile = Path(args.path)
         output_path = Path(args.output) if args.output else None
         mode = _mode_from_args(args)
+        backend = Backend(getattr(args, "backend", Backend.LITELLM.value))
+        # codex backend doesn't need an explicit --model (the CLI's
+        # own config selects the model); litellm path still does.
         model = None if mode == Mode.RULES_ONLY else args.model
+        if backend == Backend.CODEX and args.model == "ollama/deepseek-r1":
+            model = None  # let the codex CLI default win
         decompile.decompile(
             to_decompile=to_decompile,
             output_path=output_path,
             model=model,
             mode=mode,
+            backend=backend,
         )
     elif args.command == "validate":
         original = Path(args.original)

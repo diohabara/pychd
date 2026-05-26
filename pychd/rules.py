@@ -1169,6 +1169,8 @@ def _build_function(
     # recovery from the lazy `__annotate__` closure is a v2 task.
     _ = has_annotations
     trivial = _try_recover_trivial_body(code, has_docstring=docstring is not None)
+    if trivial is None:
+        trivial = _try_recover_statement_body(code, has_docstring=docstring is not None)
     body: list[ir.Stmt]
     if trivial is not None:
         body = [ir.RawStatement(source=trivial)]
@@ -1278,6 +1280,63 @@ def _try_recover_trivial_body(code: CodeType, *, has_docstring: bool) -> str | N
     if expr is not None:
         return f"return {expr}"
 
+    # Container / call / binary-op shapes — delegate to the
+    # cross-version recogniser, which handles every CPython 3.x.
+    # Importing here (rather than at module load) keeps the import
+    # graph cycle-free.
+    from pychd.cross_version import (
+        _try_render_call,
+        _try_render_expr,
+    )
+
+    call = _try_render_call(head)
+    if call is not None:
+        return f"return {call}"
+
+    extended = _try_render_expr(head, code.co_consts)
+    if extended is not None and not extended.startswith("__"):
+        return f"return {extended}"
+
+    return None
+
+
+def _try_recover_statement_body(code: CodeType, *, has_docstring: bool) -> str | None:
+    """Statement-shaped body recovery for ``raise X`` and
+    ``self.attr = val; ...`` constructor patterns.
+
+    Sibling to :func:`_try_recover_trivial_body` (which targets
+    single-expression ``return …`` shapes). Lives alongside the rest
+    of the rule pass so the native 3.14 walker gets the same body
+    coverage the cross-version walker added.
+    """
+    if code.co_flags & (CO_GENERATOR | CO_COROUTINE | CO_ASYNC_GENERATOR):
+        return None
+    if code.co_freevars:
+        return None
+    from pychd.cross_version import (
+        _try_render_init_assignments,
+        _try_render_raise,
+    )
+
+    instructions = [
+        ins for ins in dis.Bytecode(code) if ins.opname not in _TRIVIAL_PROLOGUE
+    ]
+    if (
+        has_docstring
+        and len(instructions) >= 2
+        and instructions[0].opname == "LOAD_CONST"
+        and isinstance(instructions[0].argval, str)
+        and instructions[1].opname == "POP_TOP"
+    ):
+        instructions = instructions[2:]
+    if not instructions:
+        return None
+    raise_body = _try_render_raise(instructions)
+    if raise_body is not None:
+        return raise_body
+    init_body = _try_render_init_assignments(instructions)
+    if init_body is not None:
+        return init_body
     return None
 
 
