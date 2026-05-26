@@ -28,6 +28,7 @@ Python fall back to ``llm-only`` automatically.
 
 from __future__ import annotations
 
+import ast
 import dis
 import io
 import logging
@@ -733,17 +734,31 @@ def decompile_pyc(
                 "hybrid-rewrite mode requires a model with the litellm backend"
             )
         rule_source = module.render()
-        # If the rule pass already left no unknown bodies *and* the rule
-        # output parses cleanly, skip the LLM call. Saves both wall-clock
-        # and codex tokens for shapes the rule pass nailed (re-export
-        # modules, trivial-body modules).
+        # Skip the LLM call only for the narrow re-export case — no
+        # unknown bodies, no module-level call expressions, no
+        # placeholder ``= ...`` assigns. Anything more complex than a
+        # flat ``from .x import y`` shape still goes through the LLM
+        # because the rule pass can render syntactically-valid but
+        # *semantically-wrong* output (e.g. ``CALL_FUNCTION_EX`` for
+        # ``*args``-unpacking calls collapses to a ``format(list,...)``
+        # placeholder that parses but doesn't behave like the original
+        # ``.format(*args)`` call). Keeping the LLM in those cases is
+        # what closes the strict_match gap on pypi-top20 test modules.
         skip_llm = False
         if not unknowns:
             import ast as _ast
 
             try:
-                _ast.parse(rule_source)
-                skip_llm = True
+                rule_tree = _ast.parse(rule_source)
+                has_call = any(isinstance(n, ast.Call) for n in _ast.walk(rule_tree))
+                has_placeholder = (
+                    "= ..." in rule_source
+                    or "= {}" in rule_source
+                    or "= []" in rule_source
+                    or "= set()" in rule_source
+                )
+                if not has_call and not has_placeholder:
+                    skip_llm = True
             except SyntaxError:
                 pass
         if skip_llm:
