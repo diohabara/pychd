@@ -23,28 +23,23 @@ opcodes alone.
 | Parses as valid Python 3.14 | 1228/1228 (100.0%) |
 | Edit similarity (mean) | 0.753 |
 
-**Head-to-head on contamination-resistant code** (8 modules written
-2026-05-26, compiled with Python 3.8, no prior tool or LLM has seen
-the source):
-
-| Tool | strict_match | parses | BN |
-|---|---:|---:|---:|
-| **pychd (hybrid-rewrite, Codex)** | **8/8** | 8/8 | 8/8 |
-| `decompyle3` (3.9.3) | 3/8 | 6/8 | 0/8 |
-
-See [§Contamination resistance](#contamination-resistance) for the
-methodology and [§Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)
-for the broader 23-module stdlib + PyPI head-to-head.
+See [§Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers) for the broader 23-module stdlib + PyPI head-to-head.
 
 ![Per-tool comparison at each decompiler's preferred Python version](assets/comparison_decompilers.svg)
 
-> **A note on LLM contamination.** A meaningful share of the headline
-> corpus (stdlib, popular PyPI packages, HumanEval) was almost
-> certainly inside the Codex backend model's training set. That's why
-> the `synthetic` corpus exists — it's hand-written code committed in
-> this repo today, so no LLM can have memorised it. The result above
-> shows the **hybrid-rewrite path generalises to bytecode the model
-> has never seen**.
+> **Treat every number on this page as potentially contaminated.**
+> The headline corpus (CPython stdlib, top-20 PyPI packages,
+> HumanEval) is overwhelmingly in any modern frontier model's training
+> data. The smaller `synthetic` corpus included below was *itself
+> written by an LLM during this project's development*, so it can't
+> honestly be called LLM-naïve either — at best it's "the exact
+> string never appeared in pre-2026 training data", which is a much
+> weaker claim than uncontaminated. We report scores as evidence
+> pychd's hybrid-rewrite **path** works end-to-end on bytecode → source
+> recovery, not as proof the LLM is generalising over genuinely
+> unseen distributions. A truly contamination-free evaluation would
+> require a privately-written, never-published corpus, which this
+> repository does not currently ship.
 
 ## Quick start
 
@@ -63,7 +58,7 @@ model. No extra API key needed.
 ## Table of contents
 
 - [Pipeline at a glance](#pipeline-at-a-glance)
-- [Contamination resistance](#contamination-resistance)
+- [LLM contamination disclosure](#llm-contamination-disclosure)
 - [What you get from each mode](#what-you-get-from-each-mode) — four worked examples
 - [Detailed recovery walkthrough](#detailed-recovery-walkthrough--what-happens-to-a-real-module) — step-by-step on one module
 - [How it works — compiler-pipeline perspective](#how-it-works--compiler-pipeline-perspective)
@@ -75,59 +70,49 @@ model. No extra API key needed.
 - [Scope](#scope)
 - [Citing](#citing)
 
-## Contamination resistance
+## LLM contamination disclosure
 
-The headline corpus is dominated by code (CPython stdlib, top-20 PyPI
-packages, OpenAI HumanEval) that a frontier LLM has almost certainly
-seen during training. A high recovery rate on that corpus is
-**partially memorisation**, not just decompilation. So pychd ships a
-contamination-resistant corpus to bound that effect.
+The benchmark numbers on this page should be read as **upper bounds
+under likely-contaminated conditions**, not as evidence of clean
+generalisation.
 
-**`tools/synthetic_corpus/`** — 11 modules (625 LoC) hand-written on
-2026-05-26 specifically for this evaluation. The originals use fresh
-identifiers (`Arclight`, `octrope`, `_step`, `weighted_walk`, …), are
-not derived from any open-source project, and live under this repo's
-license. No model trained before 2026-05-26 can have seen them.
+- The headline corpus is dominated by code (CPython stdlib, top-20
+  PyPI packages, OpenAI HumanEval) that any modern frontier model has
+  almost certainly seen during pre-training. A high recovery rate
+  there is partially memorisation, not just decompilation.
+- The `tools/synthetic_corpus/` corpus (11 modules, 625 LoC,
+  committed 2026-05-26) was **drafted with the assistance of an LLM
+  during this project's development**. The exact source text did not
+  exist on the public internet before that date, but the modules were
+  produced by the same model family this benchmark uses as a backend,
+  so it cannot honestly be called LLM-naïve. We keep it in the
+  benchmark because it exercises specific PEP-695 / PEP-749 / match-
+  statement constructs, but we no longer claim it isolates
+  "uncontaminated" performance.
+- The PyPI subset (`requests`, `click`, `attrs`, `flask`, `httpx`,
+  `rich`) and the top-20 sweep overlap published training corpora.
+  Recent wheel pins (e.g. `certifi 2026.5.20`) reduce *exact-version*
+  memorisation risk for those packages, but do not eliminate
+  pattern-level memorisation.
+- HumanEval is a published evaluation set and almost certainly in
+  training data; we report Pass@1 there as a re-executability sanity
+  check, not as evidence of generalisation.
 
-Hybrid-rewrite (Codex, Python 3.14) on synthetic:
+What this means for the headline numbers:
 
-| Metric | Score |
-|---|---:|
-| **Strict AST match** | **11/11 (100%)** |
-| Behavioral smoke (import + public API) | 6/11 (54.5%) |
-| Bytecode-normalised | 4/11 (36.4%) |
-| Edit similarity (mean) | 0.881 |
+- The 100 % `signature_match` / `declaration_match` numbers reflect
+  pychd's deterministic **rule pass**, which is bytecode-driven and
+  unaffected by LLM memorisation. Those are honest.
+- The `strict_match` / `BS` / `FC` gains on top of rules-only come
+  from the hybrid-rewrite path, where the LLM may be filling in
+  bodies from memory rather than from the bytecode signal we hand
+  it. We can't separate the two with the current methodology.
 
-Same 8 synthetic modules compiled with Python 3.8 and handed to
-`decompyle3` (the best non-LLM 3.8 decompiler):
-
-| Tool | parses | sig | decl | strict | BN | BS |
-|---|---:|---:|---:|---:|---:|---:|
-| **pychd (hybrid-rewrite:codex)** | 8/8 | 8/8 | 8/8 | **8/8** | 8/8 | 5/8 |
-| `decompyle3` 3.9.3 | 6/8 | 6/8 | 6/8 | 3/8 | 0/8 | 0/8 |
-
-`decompyle3` fails to parse 2 of the 8 modules (`exception_chain.py`,
-`reservoir.py`) — the recovered source is syntactically invalid.
-pychd's hybrid-rewrite recovers all 8 with full strict-AST match.
-
-**Caveats — pychd's hybrid-rewrite path still uses an LLM**, so it's
-not pure decompilation. The strict-AST match on synthetic shows the
-recovery is driven by the bytecode signal we hand the model (rule
-pass output + full module disassembly), not by surface-level
-memorisation of the source. The rules-only baseline on the same
-corpus is 5/11 strict (deterministic, no LLM); the hybrid-rewrite
-delta is what the LLM contributes.
-
-Additional defensive evidence:
-
-- **PyPI corpus pins are recent.** ``assets/_pypi_corpus_pins.json``
-  records the wheel versions used. Several were uploaded to PyPI in
-  May 2026 (`certifi` 2026.5.20 — six days before this benchmark;
-  `click` 8.4.1 — four days before; `idna` 3.16, `soupsieve` 2.8.4,
-  `requests` 2.34.2 — all within two weeks). Memorisation of those
-  exact versions is implausible.
-- **`cursor-sdk` 0.1.5 is a small private-style SDK** with limited
-  GitHub reach, included as another low-contamination target.
+A clean contamination-free evaluation would require a privately
+authored, never-published corpus that no LLM has ever touched at any
+stage. This repository does not currently provide one. If you need
+that bound for your own use, please carry it out on code you control
+and report back — we will link the results here.
 
 ## Pipeline at a glance
 
@@ -1057,7 +1042,7 @@ reviewers can read the trade-off directly.
 > _This section is generated by `tools/render_paper.py` and_ _committed alongside the code. Re-generate via `just paper`_ _whenever rules.py or any corpus changes._
 
 **Headline:** hybrid-rewrite recovery on **1228 modules / 514,349 LoC**
-(includes the 11-module contamination-resistant `synthetic` corpus):
+(read with the [§LLM contamination disclosure](#llm-contamination-disclosure) in mind — including the `synthetic` corpus, which was LLM-assisted):
 
 - **Strict AST match: 1144/1228 (93.2%)** — full stripped-AST equality (the regression telltale; bounded by CPython compiler normalisations).
 - **Pass@1 (functional correctness): 160/164 (97.6%)** on HumanEval — Decompile-Bench's re-executability oracle (`check(candidate)`).
@@ -1112,12 +1097,18 @@ when the recovery is otherwise incomplete. `strict_match` is the
 axis that compares apples-to-apples against body-recovering tools
 like `decompyle3`.
 
-#### Contamination-resistant head-to-head — synthetic Python 3.8
+#### Head-to-head on `synthetic` — Python 3.8
 
-The eight synthetic modules (see [§Contamination resistance](#contamination-resistance))
-compiled with Python 3.8 and decompiled by each available 3.8-capable
-tool. None of these modules existed before 2026-05-26, so any tool
-that scores high here cannot be memorising.
+The eight `synthetic` modules compiled with Python 3.8 and handed to
+every 3.8-capable tool we have. Read this with the [§LLM contamination
+disclosure](#llm-contamination-disclosure) in mind: these modules
+were drafted with LLM assistance during this project's development,
+so a high pychd score here is **not** evidence of contamination-free
+generalisation. We keep the table because it still measures whether
+the bytecode-driven pipeline produces *syntactically valid, AST-
+matching* source from a Python 3.8 .pyc — which `decompyle3` fails
+to do on 2 of the 8 modules even with the source pattern available
+in its training data.
 
 | Tool | parses | sig | decl | **strict** | BN | BS | ED |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -1129,18 +1120,17 @@ Source: `assets/_synthetic_comparison.json` (commit-tracked). Reproduce:
 
 ```bash
 uv run python tools/build_corpora.py --only synthetic
-# then compile with Python 3.8 and run pychd + decompyle3 — see
-# README §Contamination resistance for the exact commands.
+# then compile with Python 3.8 and run pychd + decompyle3.
 ```
 
 #### Broader head-to-head — 23-module stdlib + PyPI subset
 
-Below is the older, broader comparison against a 23-module mix of
-stdlib + curated-PyPI modules. The PyPI subset overlaps published
-corpora (`six`, `packaging`, `certifi`, `idna`, `charset_normalizer`)
-that the Codex backend almost certainly saw at training time — so
-take pychd's wins on this corpus with the contamination caveat in
-mind. The synthetic head-to-head above is the cleaner number.
+Below is the broader comparison against a 23-module mix of stdlib +
+curated-PyPI modules. The PyPI subset overlaps published corpora
+(`six`, `packaging`, `certifi`, `idna`, `charset_normalizer`) that
+the Codex backend almost certainly saw at training time, so all the
+caveats from [§LLM contamination disclosure](#llm-contamination-disclosure)
+apply here too.
 
 | Tool | Source | Install | Coverage | Best Py version (this run) |
 |---|---|---|---|---|

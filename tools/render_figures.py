@@ -67,43 +67,67 @@ PLOTLY_TEMPLATE = "plotly_white"
 
 
 def _normalize_svg(svg_text: str, name: str) -> str:
-    """Replace Plotly's per-render random IDs with deterministic ones.
+    """Rewrite every SVG ``id`` and corresponding reference to a stable
+    figure-derived identifier so re-renders are byte-identical.
 
-    Plotly stamps every ``<defs>`` / ``<clipPath>`` / heatmap group /
-    gradient with a fresh hex suffix on every render — e.g.
-    ``clip2d6634xyplot``, ``gebb666-45449b96``, ``hycbce8b``. Suffixes
-    rotate even when the data is byte-identical, which used to trap the
-    pre-commit hook in a "files modified" loop. We discover every
-    distinct ≥6-hex token in the file (skipping CSS colour literals,
-    which are always prefixed with ``#`` or wrapped in ``rgb(...)``)
-    and rewrite each to a stable hash derived from the figure name +
-    the token's *position rank* in the original SVG. Rank-based
-    seeding keeps the mapping stable across runs even if Plotly picks
-    a different random pool, as long as the *number* and *length* of
-    tokens stay constant.
+    The previous implementation scanned for any 6+ hex-digit run in
+    the file and replaced it; that was disastrously over-eager because
+    valid SVG numeric attributes like ``width="251.4666666666667"``
+    contain stretches of decimal digits that happen to be valid hex
+    (``66666666``), and Plotly emits these freely. The fallout was a
+    structurally broken SVG (clip paths got their widths overwritten
+    with random hex, rendering whole panels as blank rectangles —
+    which is exactly the "真っ白" failure the user just hit).
+
+    This rewrite only touches values that are unambiguously SVG ids:
+    the contents of ``id="..."`` attributes and references to them
+    via ``url(#...)`` / ``xlink:href="#..."`` / ``href="#..."`` /
+    inline ``fill: url('#...')``. Numeric attributes are never
+    matched. Each old id is mapped to ``svgid-<12-hex-hash>`` so the
+    output is deterministic across runs.
     """
     import hashlib
     import re
 
-    # Tokens of ≥6 hex characters that are NOT immediately preceded by
-    # `#` (which would mark them as a CSS colour) and NOT inside an
-    # `rgb(...)` triplet. Plotly's random IDs sit in attribute values
-    # like `id="clipebb666xy"` or `url(#gebb666-45449b96)`.
-    token_re = re.compile(r"(?<![#0-9a-fA-F])[0-9a-f]{6,}")
-    seen: list[str] = []
-    for match in token_re.finditer(svg_text):
-        tok = match.group(0)
-        if tok not in seen:
-            seen.append(tok)
+    # Collect ids in first-appearance order so the deterministic
+    # rename does not depend on the random string Plotly happened to
+    # pick this run.
+    seen_in_order: list[str] = []
+    seen_set: set[str] = set()
+    # Scan once over the whole text and grab any id-shaped match from
+    # any of the four patterns.
+    combined = re.compile(
+        r'\bid="([^"]+)"'
+        r"|url\(#([^)]+)\)"
+        r'|\b(?:xlink:href|href)="#([^"]+)"'
+        r"|url\(['\"]?#([^)'\"]+)['\"]?\)"
+    )
+    for m in combined.finditer(svg_text):
+        for grp in m.groups():
+            if grp and grp not in seen_set:
+                seen_set.add(grp)
+                seen_in_order.append(grp)
+
     mapping: dict[str, str] = {}
-    for rank, tok in enumerate(seen):
-        seed = f"{name}:{rank}:{len(tok)}".encode()
-        mapping[tok] = hashlib.sha1(seed).hexdigest()[: len(tok)]
+    for rank, old in enumerate(seen_in_order):
+        h = hashlib.sha1(f"{name}:{rank}".encode()).hexdigest()[:12]
+        mapping[old] = f"svgid-{h}"
+
     out = svg_text
-    # Replace longer tokens first so a 6-hex prefix doesn't clobber an
-    # 8-hex token of which it's the leading substring.
-    for tok in sorted(mapping, key=len, reverse=True):
-        out = out.replace(tok, mapping[tok])
+    # Replace longest-first so a token that is a prefix of another
+    # token (e.g. `clipFoo` ⊂ `clipFooxy`) does not get partially
+    # rewritten and corrupt the longer one.
+    for old in sorted(mapping, key=len, reverse=True):
+        new = mapping[old]
+        out = out.replace(f'id="{old}"', f'id="{new}"')
+        out = out.replace(f"url(#{old})", f"url(#{new})")
+        out = out.replace(f"url(#{old}')", f"url(#{new}')")
+        out = out.replace(f'url(#{old}")', f'url(#{new}")')
+        out = out.replace(f"url('#{old}')", f"url('#{new}')")
+        out = out.replace(f'url("#{old}")', f'url("#{new}")')
+        out = out.replace(f'xlink:href="#{old}"', f'xlink:href="#{new}"')
+        out = out.replace(f'href="#{old}"', f'href="#{new}"')
+
     if not out.endswith("\n"):
         out += "\n"
     return out

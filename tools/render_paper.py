@@ -60,7 +60,11 @@ from pychd.decompile import Backend, Mode  # noqa: E402
 from tools.benchmark import ModuleMetrics, measure_module  # noqa: E402
 
 CORPORA = [
-    ("synthetic", "Contamination-resistant synthetic modules (2026-05-26)"),
+    (
+        "synthetic",
+        "Synthetic modules drafted with LLM assistance (2026-05-26 —"
+        " see §LLM contamination disclosure)",
+    ),
     ("stdlib", "Curated stdlib (10 modules)"),
     ("stdlib-full", "Full Python 3.14 stdlib (single-file modules)"),
     ("pypi", "PyPI: requests, click, attrs, flask, httpx, rich"),
