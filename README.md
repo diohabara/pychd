@@ -50,7 +50,7 @@ per-corpus breakdown lives in
 | Mode | strict | BX | BN | BS | FC (HumanEval) | ED |
 |---|---:|---:|---:|---:|---:|---:|
 | **Rules-only** (deterministic, no LLM) | **36.0%** (438/1217) | 0.9% | 7.2% | 42.1% | 2.4% (4/164) | 0.445 |
-| **Hybrid-rewrite** (one Codex call per module) | **91.1%** (1109/1217) — **2.53x** | 16.2% | 48.2% | 68.0% | **97.6%** (160/164) | 0.746 |
+| **Hybrid-rewrite** (one Codex call per module) | **92.4%** (1125/1217) — **2.57x** | 16.7% | 48.5% | 68.1% | **97.6%** (160/164) | 0.745 |
 
 - *Rules-only* — 487 / 1217 strict matches, 1215 / 1217 signature
   matches (99.8%), 1212 / 1217 declaration matches (99.6%), 4 / 164
@@ -1057,24 +1057,24 @@ reviewers can read the trade-off directly.
 
 **Headline:** hybrid-rewrite recovery on **1217 modules / 513,724 LoC**:
 
-- **Signature match: 1214/1217 (99.8%)** — every public class, function, import, and class-method name in the original survives in the recovered tree.
-- **Declaration match: 1211/1217 (99.5%)** — signature match plus every module/class-level variable and annotated attribute by name.
-- **Strict match: 1109/1217 (91.1%)** — full stripped-AST equality (cosmetic regression telltale; bounded by CPython compiler normalisations).
-- **Behavioral smoke: 828/1217 (68.0%)** — recovered module imports under the producing interpreter and exposes the same public name + signature surface as the original. The semantic axis that tolerates the most compiler normalisations; see [Why not naïve pyc → py → pyc?](#why-not-naïve-pyc--py--pyc) for what `BX`/`BN`/`BS` measure and what each one catches.
+- **Signature match: 1213/1217 (99.7%)** — every public class, function, import, and class-method name in the original survives in the recovered tree.
+- **Declaration match: 1209/1217 (99.3%)** — signature match plus every module/class-level variable and annotated attribute by name.
+- **Strict match: 1125/1217 (92.4%)** — full stripped-AST equality (cosmetic regression telltale; bounded by CPython compiler normalisations).
+- **Behavioral smoke: 829/1217 (68.1%)** — recovered module imports under the producing interpreter and exposes the same public name + signature surface as the original. The semantic axis that tolerates the most compiler normalisations; see [Why not naïve pyc → py → pyc?](#why-not-naïve-pyc--py--pyc) for what `BX`/`BN`/`BS` measure and what each one catches.
 - **Pass@1 (functional correctness): 160/164 (97.6%)** — Decompile-Bench's re-executability oracle, scored on corpora that ship a `check(candidate)` test (HumanEval is currently the only one). The recovered module is imported under the producing interpreter and its entry-point function is fed to the original test suite. A pure rules-only baseline necessarily scores near 0 here because bodies are stubbed; future LLM-assisted or simple-body matcher work shows up directly in this number.
-- **Edit similarity (mean): 0.746** — Decompile-Bench-style character-level Ratcliff-Obershelp ratio averaged over the corpus. 1.0 means byte-identical, 0.0 means entirely dissimilar. A continuous metric that surfaces incremental rule-pass improvements which haven't yet flipped any boolean axis.
+- **Edit similarity (mean): 0.745** — Decompile-Bench-style character-level Ratcliff-Obershelp ratio averaged over the corpus. 1.0 means byte-identical, 0.0 means entirely dissimilar. A continuous metric that surfaces incremental rule-pass improvements which haven't yet flipped any boolean axis.
 
 #### Per-corpus results
 
 | Corpus | Modules | LoC | Parses | Sig | Decl | Strict | BX | BN | BS | FC (Pass@1) | ED |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **stdlib**<br/>_Curated stdlib (10 modules)_ | 10 | 15,996 | 10/10 (100.0%) | 10/10 (100.0%) | 10/10 (100.0%) | 10/10 (100.0%) | 8/10 (80.0%) | 8/10 (80.0%) | 6/10 (60.0%) | n/a | 0.960 |
-| **stdlib-full**<br/>_Full Python 3.14 stdlib (single-file modules)_ | 153 | 130,182 | 153/153 (100.0%) | 152/153 (99.3%) | 151/153 (98.7%) | 141/153 (92.2%) | 51/153 (33.3%) | 83/153 (54.2%) | 131/153 (85.6%) | n/a | 0.810 |
-| **pypi**<br/>_PyPI: requests, click, attrs, flask, httpx, rich_ | 189 | 75,377 | 189/189 (100.0%) | 189/189 (100.0%) | 189/189 (100.0%) | 179/189 (94.7%) | 37/189 (19.6%) | 118/189 (62.4%) | 64/189 (33.9%) | n/a | 0.739 |
-| **pypi-top20**<br/>_PyPI top-20 pure-Python packages_ | 682 | 281,925 | 682/682 (100.0%) | 682/682 (100.0%) | 680/682 (99.7%) | 598/682 (87.7%) | 96/682 (14.1%) | 224/682 (32.8%) | 463/682 (67.9%) | n/a | 0.686 |
+| **stdlib-full**<br/>_Full Python 3.14 stdlib (single-file modules)_ | 153 | 130,182 | 153/153 (100.0%) | 151/153 (98.7%) | 150/153 (98.0%) | 142/153 (92.8%) | 52/153 (34.0%) | 83/153 (54.2%) | 131/153 (85.6%) | n/a | 0.808 |
+| **pypi**<br/>_PyPI: requests, click, attrs, flask, httpx, rich_ | 189 | 75,377 | 189/189 (100.0%) | 189/189 (100.0%) | 189/189 (100.0%) | 181/189 (95.8%) | 38/189 (20.1%) | 118/189 (62.4%) | 64/189 (33.9%) | n/a | 0.738 |
+| **pypi-top20**<br/>_PyPI top-20 pure-Python packages_ | 682 | 281,925 | 682/682 (100.0%) | 682/682 (100.0%) | 679/682 (99.6%) | 611/682 (89.6%) | 100/682 (14.7%) | 228/682 (33.4%) | 464/682 (68.0%) | n/a | 0.687 |
 | **humaneval**<br/>_OpenAI HumanEval (164 problems)_ | 164 | 3,361 | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 2/164 (1.2%) | 149/164 (90.9%) | 163/164 (99.4%) | 160/164 (97.6%) | 0.922 |
-| **cursor-sdk**<br/>_cursor-sdk 0.1.5 (top-level modules)_ | 19 | 6,883 | 17/19 (89.5%) | 17/19 (89.5%) | 17/19 (89.5%) | 17/19 (89.5%) | 3/19 (15.8%) | 4/19 (21.1%) | 1/19 (5.3%) | n/a | 0.827 |
-| **aggregate** | **1217** | **513,724** | **1215/1217 (99.8%)** | **1214/1217 (99.8%)** | **1211/1217 (99.5%)** | **1109/1217 (91.1%)** | **197/1217 (16.2%)** | **586/1217 (48.2%)** | **828/1217 (68.0%)** | **160/164 (97.6%)** | **0.746** |
+| **cursor-sdk**<br/>_cursor-sdk 0.1.5 (top-level modules)_ | 19 | 6,883 | 17/19 (89.5%) | 17/19 (89.5%) | 17/19 (89.5%) | 17/19 (89.5%) | 3/19 (15.8%) | 4/19 (21.1%) | 1/19 (5.3%) | n/a | 0.760 |
+| **aggregate** | **1217** | **513,724** | **1215/1217 (99.8%)** | **1213/1217 (99.7%)** | **1209/1217 (99.3%)** | **1125/1217 (92.4%)** | **203/1217 (16.7%)** | **590/1217 (48.5%)** | **829/1217 (68.1%)** | **160/164 (97.6%)** | **0.745** |
 
 #### Visualisation
 
@@ -1093,6 +1093,7 @@ Every Python 3.x release routes through a rule pass: 3.14 hits the **native** wa
 | Cause | Count | Fundamentally recoverable? |
 |---|---:|---|
 | if TYPE_CHECKING block | 2 | future work |
+| try/except ImportError (control flow) | 1 | future work |
 | if-False-block (CPython constant-folds — unrecoverable) | 1 | ❌ no — constant-folded |
 
 <!-- END: paper-generated -->
@@ -1412,8 +1413,8 @@ If you reference pychd somewhere, here's the BibTeX:
             constant-folded ``if False:'' blocks. (b) Hybrid-rewrite
             path (rule pass + one Codex CLI call per module, with the
             improved pychd rule pass and the AST-normalising
-            strict\_match metric used by prior research): 91.1\%
-            strict-AST match (2.53$\times$ improvement over the
+            strict\_match metric used by prior research): 92.4\%
+            strict-AST match (2.57$\times$ improvement over the
             pre-improvements baseline) and 97.6\%
             functional-correctness Pass@1 on HumanEval
             (160/164),

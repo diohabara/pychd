@@ -321,6 +321,31 @@ _MODULE_REWRITE_PROMPT = textwrap.dedent(
     - Do NOT add any imports the bytecode does not justify.
     - The output must pass ``ast.parse`` and ``py_compile.compile``
       under Python {version_str}.
+
+    AST-fidelity guidance (these tighten ``strict_match`` recovery —
+    your output is compared against the original via ``ast.dump``
+    after a normalising pass):
+
+    - Prefer the *most idiomatic* form of every expression: don't
+      introduce intermediate variables that the original didn't have;
+      don't expand list/dict/set comprehensions into for-loops; don't
+      change ``a + b`` to ``b + a``.
+    - For default-argument literals, use the exact form the bytecode
+      LOAD_CONSTs reveal — ``0`` not ``0.0``, ``[]`` not ``list()``,
+      etc.
+    - For comparison chains (``a < b < c``), emit the chained form,
+      not the conjunction-of-pairs.
+    - For string literals, use the same quote style as the rule
+      pass output where possible (the metric folds quotes via
+      ast.unparse, but matching the original avoids unparse-induced
+      reformatting on docstrings).
+    - For ``while True: ... if x: break`` loops, keep the inner-test
+      shape — do not refactor to ``while not x: ...``.
+    - For empty function bodies that are placeholders in the rule
+      output, write the actual body — do not leave ``pass`` if the
+      bytecode has real statements.
+    - Single-statement methods that return a constant or a call:
+      keep them on a single line if and only if the original was.
     """
 )
 
