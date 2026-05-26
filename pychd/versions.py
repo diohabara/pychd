@@ -384,7 +384,7 @@ KNOWN_VERSIONS: dict[int, VersionInfo] = {
             "PEP 749 __annotate__ closures",
             "LOAD_SMALL_INT / LOAD_FAST_BORROW / LOAD_COMMON_CONSTANT",
             "EXTENDED_ARG used for large co_consts indices",
-            "PEP 758 'except A, B:' parens-free syntax",
+            "PEP 758 'except (A, B):' parens-free syntax",
         ],
     ),
 }

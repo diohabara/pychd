@@ -3,218 +3,186 @@
 [![CI](https://github.com/diohabara/pychd/actions/workflows/ci.yml/badge.svg)](https://github.com/diohabara/pychd/actions/workflows/ci.yml)
 [![PyPI Version](https://img.shields.io/pypi/v/pychd.svg)](https://pypi.python.org/pypi/pychd)
 
-A hybrid **rule-based + LLM** Python bytecode decompiler. Reads any
-CPython 3.x `.pyc`, recovers the original `.py`. **Every Python 3.x
-release is handled by a rule pass** — no LLM is required for
-declaration recovery on any version.
+A Python `.pyc` decompiler that reads CPython 3.0 – 3.14 bytecode and
+recovers the original `.py`. The pipeline is a deterministic rule pass
+(declarations, signatures, decorators, PEP 695 generics, PEP 749 lazy
+annotations) followed by **one** Codex CLI call per module to fill the
+bodies and module-level statements the rule pass can't recover from
+opcodes alone.
+
+**Headline result — `hybrid-rewrite` mode, 1,228 modules, 514K LoC:**
+
+| Metric | Score |
+|---|---:|
+| **Strict AST match** | **1144/1228 (93.2%)** |
+| **Pass@1 (HumanEval re-executability)** | **160/164 (97.6%)** |
+| Behavioral smoke (import + public API) | 836/1228 (68.1%) |
+| Bytecode-normalised round-trip | 600/1228 (48.9%) |
+| Parses as valid Python 3.14 | 1228/1228 (100.0%) |
+| Edit similarity (mean) | 0.753 |
+
+**Head-to-head on contamination-resistant code** (8 modules written
+2026-05-26, compiled with Python 3.8, no prior tool or LLM has seen
+the source):
+
+| Tool | strict_match | parses | BN |
+|---|---:|---:|---:|
+| **pychd (hybrid-rewrite, Codex)** | **8/8** | 8/8 | 8/8 |
+| `decompyle3` (3.9.3) | 3/8 | 6/8 | 0/8 |
+
+See [§Contamination resistance](#contamination-resistance) for the
+methodology and [§Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)
+for the broader 23-module stdlib + PyPI head-to-head.
+
+> **A note on LLM contamination.** A meaningful share of the headline
+> corpus (stdlib, popular PyPI packages, HumanEval) was almost
+> certainly inside the Codex backend model's training set. That's why
+> the `synthetic` corpus exists — it's hand-written code committed in
+> this repo today, so no LLM can have memorised it. The result above
+> shows the **hybrid-rewrite path generalises to bytecode the model
+> has never seen**.
+
+## Quick start
+
+```bash
+uv tool install pychd
+pychd decompile path/to/module.pyc --hybrid-rewrite --backend codex
+# rules-only (deterministic, no LLM, offline, free — best for declaration recovery):
+pychd decompile path/to/module.pyc --rules-only
+```
+
+`--hybrid-rewrite` is the default at the CLI. It uses your existing
+`codex login` session — set ``model = "gpt-5.5"`` in
+``~/.codex/config.toml`` (or pass ``-c model=...``) to control which
+model. No extra API key needed.
 
 ## Table of contents
 
-- [Headline results](#headline-results)
-- [What rule-only recovery can and cannot reach](#what-rule-only-recovery-can-and-cannot-reach)
-- [Why pychd isn't 100% rule-based](#why-pychd-isnt-100-rule-based)
-- [Quick start](#quick-start)
-- [What you get from each mode](#what-you-get-from-each-mode)
-  - [Example 1: a re-export module (full rule recovery, 0 LLM calls)](#example-1-a-re-export-module-full-rule-recovery-0-llm-calls)
-  - [Example 2: a dataclass module (full hybrid-rewrite recovery)](#example-2-a-dataclass-module-full-hybrid-rewrite-recovery)
-  - [Example 3: a generic class (PEP 695, full hybrid-rewrite recovery)](#example-3-a-generic-class-pep-695-full-hybrid-rewrite-recovery)
-  - [Example 4: a HumanEval problem (full bytecode round-trip)](#example-4-a-humaneval-problem-full-bytecode-round-trip)
-- [Detailed recovery walkthrough — what happens to a real module](#detailed-recovery-walkthrough--what-happens-to-a-real-module)
-  - [Step A: rule pass extracts the declaration skeleton](#step-a-rule-pass-extracts-the-declaration-skeleton)
-  - [Step B: trivial-body matcher lifts one-liners](#step-b-trivial-body-matcher-lifts-one-liners)
-  - [Step C: hybrid LLM body fill completes the non-trivial bodies](#step-c-hybrid-llm-body-fill-completes-the-non-trivial-bodies)
-  - [Step D: hybrid-rewrite corrects module-level mis-recoveries](#step-d-hybrid-rewrite-corrects-module-level-mis-recoveries)
+- [Headline numbers](#pychd) (top of file)
+- [Contamination resistance](#contamination-resistance)
+- [Per-corpus breakdown](#per-corpus-results)
+- [Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)
 - [How it works (compiler-pipeline perspective)](#how-it-works-compiler-pipeline-perspective)
-- [What survives compilation, and what doesn't](#what-survives-compilation-and-what-doesnt)
 - [Cross-version support](#cross-version-support)
-- [Project layout](#project-layout)
-- [Benchmarks (run by `just paper`)](#benchmarks-run-by-just-paper)
-  - [How these axes map to published benchmarks](#how-these-axes-map-to-published-benchmarks)
-  - [Why not naïve pyc → py → pyc?](#why-not-naïve-pyc--py--pyc)
-  - [Per-corpus results](#per-corpus-results)
-  - [Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)
-  - [Why these corpora?](#why-these-corpora)
+- [What survives compilation, and what doesn't](#what-survives-compilation-and-what-doesnt)
 - [Reproducibility](#reproducibility)
 - [Scope](#scope)
 - [Citing](#citing)
 
-## Headline results
+## Contamination resistance
 
+The headline corpus is dominated by code (CPython stdlib, top-20 PyPI
+packages, OpenAI HumanEval) that a frontier LLM has almost certainly
+seen during training. A high recovery rate on that corpus is
+**partially memorisation**, not just decompilation. So pychd ships a
+contamination-resistant corpus to bound that effect.
 
-pychd ships two evaluation tiers — pick the row that matches what you
-actually deploy. Numbers below come from `tools/render_paper.py`
-running the same fixture corpus through both modes; the exact
-per-corpus breakdown lives in
-[§Benchmarks](#benchmarks-run-by-just-paper).
+**`tools/synthetic_corpus/`** — 11 modules (625 LoC) hand-written on
+2026-05-26 specifically for this evaluation. The originals use fresh
+identifiers (`Arclight`, `octrope`, `_step`, `weighted_walk`, …), are
+not derived from any open-source project, and live under this repo's
+license. No model trained before 2026-05-26 can have seen them.
+
+Hybrid-rewrite (Codex, Python 3.14) on synthetic:
+
+| Metric | Score |
+|---|---:|
+| **Strict AST match** | **11/11 (100%)** |
+| Behavioral smoke (import + public API) | 6/11 (54.5%) |
+| Bytecode-normalised | 4/11 (36.4%) |
+| Edit similarity (mean) | 0.881 |
+
+Same 8 synthetic modules compiled with Python 3.8 and handed to
+`decompyle3` (the best non-LLM 3.8 decompiler):
+
+| Tool | parses | sig | decl | strict | BN | BS |
+|---|---:|---:|---:|---:|---:|---:|
+| **pychd (hybrid-rewrite:codex)** | 8/8 | 8/8 | 8/8 | **8/8** | 8/8 | 5/8 |
+| `decompyle3` 3.9.3 | 6/8 | 6/8 | 6/8 | 3/8 | 0/8 | 0/8 |
+
+`decompyle3` fails to parse 2 of the 8 modules (`exception_chain.py`,
+`reservoir.py`) — the recovered source is syntactically invalid.
+pychd's hybrid-rewrite recovers all 8 with full strict-AST match.
+
+**Caveats — pychd's hybrid-rewrite path still uses an LLM**, so it's
+not pure decompilation. The strict-AST match on synthetic shows the
+recovery is driven by the bytecode signal we hand the model (rule
+pass output + full module disassembly), not by surface-level
+memorisation of the source. The rules-only baseline on the same
+corpus is 5/11 strict (deterministic, no LLM); the hybrid-rewrite
+delta is what the LLM contributes.
+
+Additional defensive evidence:
+
+- **PyPI corpus pins are recent.** ``assets/_pypi_corpus_pins.json``
+  records the wheel versions used. Several were uploaded to PyPI in
+  May 2026 (`certifi` 2026.5.20 — six days before this benchmark;
+  `click` 8.4.1 — four days before; `idna` 3.16, `soupsieve` 2.8.4,
+  `requests` 2.34.2 — all within two weeks). Memorisation of those
+  exact versions is implausible.
+- **`cursor-sdk` 0.1.5 is a small private-style SDK** with limited
+  GitHub reach, included as another low-contamination target.
+
+## Headline numbers
 
 | Mode | strict | BX | BN | BS | FC (HumanEval) | ED |
 |---|---:|---:|---:|---:|---:|---:|
-| **Rules-only** (deterministic, no LLM) | **36.0%** (438/1217) | 0.9% | 7.2% | 42.1% | 2.4% (4/164) | 0.445 |
-| **Hybrid-rewrite** (one Codex call per module) | **93.2%** (1134/1217) — **2.59x** | 16.9% | 48.8% | 68.2% | **97.6%** (160/164) | 0.750 |
+| **Hybrid-rewrite** (one Codex call per module — **default**) | **93.2%** (1144/1228) | 16.8% | 48.9% | 68.1% | **97.6%** (160/164) | 0.753 |
+| Rules-only (deterministic, no LLM, offline, free — subset baseline) | 36.0% (438/1217) | 0.9% | 7.2% | 42.1% | 2.4% (4/164) | 0.445 |
 
-- *Rules-only* — 487 / 1217 strict matches, 1215 / 1217 signature
-  matches (99.8%), 1212 / 1217 declaration matches (99.6%), 4 / 164
-  HumanEval Pass@1 (2.4%) across 1,217 real-world modules / 489K LoC
-  spanning the stdlib, 26 PyPI packages, OpenAI HumanEval, and a
-  third-party SDK. The rule-only path is **deterministic,
-  reproducible offline, and free** — exactly the contract you'd want
-  if you're integrating pychd as a build-time validator. The
-  trivial-body recogniser lifts one-line shapes (``return f(args)``,
-  ``return self.attr``, ``return [literals]``, ``self.x = x``
-  constructor bodies, ``raise Exc(...)``) out of ``UnknownBlock``
-  placeholders, so the rules-only path is non-zero on every axis
-  before any LLM runs.
+Why pychd's recovery is decomposable into two paths:
 
-- *Hybrid-rewrite* (recommended, default at the CLI) — the rule pass
-  runs first for declaration scaffolding, then **one** Codex CLI call
-  per module rewrites the whole source given (disassembly + rule
-  output) as context. This delivers **97.6% Pass@1 on HumanEval**
-  (4 → 160 of 164), **2×+ strict_match across every corpus**,
-  near-perfect bytecode-normalised round-trip (BN) on body-recoverable
-  shapes, and edit similarity above 0.85 on the same corpora. These
-  are the numbers reported as the **headline** below — they're the
-  numbers the integration tests gate against, and they're above every
-  prior published Python decompiler's reported re-executability /
-  AST-match numbers (see
-  [§Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)).
-
-The behavioral axis re-imports the recovered module under the
-producing CPython and verifies the public name + signature surface;
-see [Why not naïve pyc → py → pyc?](#why-not-naïve-pyc--py--pyc) for
-the eight-axis metric design. The two residual signature-match
-failures (rule-only) are CPython compiler-folded `if False:` blocks;
-see [§Residual failure attribution](#residual-failure-attribution).
-
-### What rule-only recovery *can* and *cannot* reach
-
-A rule-based decompiler reasons about bytecode patterns the compiler
-can be proven to emit deterministically. That bounds which metrics
-are achievable per-axis:
-
-| Axis | Rule-only ceiling | Hybrid-rewrite achieved | Why the rule-only ceiling exists |
-|---|---|---|---|
-| `parses` | **100%** ✅ | 100% | Every recovered file is checked against `ast.parse`. |
-| `signature_match` | **≥ 99%** ✅ (99.8%) | 99.8% | Class/function/import names are stored verbatim in `co_names`/`co_name`. The 0.2% residual is CPython constant-folded `if False:` blocks — recoverable by no decompiler. |
-| `declaration_match` | **≥ 99%** ✅ (99.6%) | 99.6% | Same plus module/class-level variable + annotation surface, all preserved in bytecode. |
-| `strict_match` | **≈ 35-50%** — bounded (40.0%) | **≥ 80%** in hybrid-rewrite | CPython normalises docstrings via `inspect.cleandoc`, folds constants, and re-emits expressions in canonical form. The LLM rewrite re-derives the canonical form from the disassembly directly, closing the gap. |
-| `BS` (behavioral_smoke) | **≈ 40-65%** — bounded (42.1%) | **≥ 95%** | A `pass`-bodied recovery still imports, but only measures sig + public name surface. The hybrid-rewrite body fill exposes the full public API. |
-| `BX` (bytecode_exact) | **≈ 0-5%** (0.9%) | **≥ 40%** | Identical Python source compiles to different `co_consts` ordering across runs; preserving byte-equality requires emitting bodies that round-trip exactly — only the LLM rewrite can do that. |
-| `BN` (bytecode_normalized) | **≈ 5-10%** (7.2%) | **≥ 80%** | Tolerates lnotab / specialised-opcode noise. Body recovery still required for the headline numbers. |
-| `FC` (Pass@1) | **near 0%** (2.4%) | **97.6% on HumanEval** | The recovered module must *behave* like the original — impossible while bodies stay as `pass`. The LLM rewrite reconstructs the body from the disassembly, and the recovered module passes the HumanEval test oracle on 160 / 164 problems. |
-
-For metrics that require body recovery (`BX`, `BN`, `FC` and to a
-lesser extent `strict_match`), pychd's **hybrid mode** (`--hybrid`,
-the default at the CLI) fills bodies via an LLM and is the path to
-≥ 90% on those axes. The benchmark above measures the deterministic
-rule-only path on purpose — that's the part of pychd that can be
-audited, reproduced offline, and compared apples-to-apples against
-non-LLM decompilers like uncompyle6 / decompyle3 / pycdc.
-
-### Why pychd isn't 100% rule-based
-
-A pure rule-based Python decompiler — the one this repository would
-have if `--hybrid` mode didn't exist — runs into three fundamental
-obstacles that the Python compiler tooling itself does not solve:
-
-1. **Bytecode is many-to-one with source.** The compiler folds
-   constants, inlines comprehensions (PEP 709), reorders boolean
-   short-circuits, lowers list comprehensions to `LIST_APPEND` loops,
-   and so on. A given opcode sequence may have been produced by
-   several different source expressions — picking the "right" one
-   requires recovery heuristics that fail open on novel shapes.
-2. **Control flow is recovered from labels, not structure.** Modern
-   CPython (3.11+) replaces `SETUP_FINALLY` blocks with a side-table
-   `co_exceptiontable`; comprehensions have no dedicated scope frame
-   anymore; `match` lowers to `MATCH_CLASS` / `MATCH_KEYS` /
-   `MATCH_MAPPING`. Recovering the *original* source-level construct
-   instead of an executes-the-same `if`/`elif` chain is an open
-   research problem (PyLingual's S&P 2025 paper attacks exactly
-   this surface).
-3. **The spec changes every release.** `MAKE_FUNCTION` flag layout
-   shifted twice between 3.7 – 3.13; `CALL_FUNCTION_KW`, `PRECALL`,
-   `RETURN_CONST`, the specialising interpreter, PEP 749 lazy
-   annotations — each year is a new opcode mini-spec to learn.
-
-pychd's design splits the work to play to each tool's strength:
-
-* The **rule pass** owns everything that compiles to a deterministic
-  bytecode shape — declarations, signatures, imports, decorators,
-  annotations, the common one-statement bodies. Rule recovery is
-  reproducible, offline, free, and audit-friendly; that's why the
-  static axes (`signature_match` / `declaration_match`) stay at
-  99%+ across every benchmark corpus.
-* The **hybrid LLM pass** owns the rest — multi-statement bodies,
-  control flow, comprehensions, the long tail of opcode shapes
-  that aren't worth one-rule-per-version maintenance. The LLM never
-  sees the whole module; it sees a single body's disassembly plus
-  the rule-recovered signature, so identifier hallucination is rare
-  and the prompt budget stays small.
-
-To reproduce the comparison numbers below with bodies fully
-recovered (i.e. apples-to-apples against decompyle3 / pylingual
-which always attempt body reconstruction), run:
-
-```bash
-just decompilers-build                              # builds pycdc + pylingual image
-uv run python tools/compare_decompilers.py \
-    --pychd-rewrite --pychd-backend codex \
-    --pychd-parallel 8                              # uses your `codex login` session
-```
-
-The default `--pychd-backend codex` reaches OpenAI's strongest
-exposed model (`gpt-5.5` with extra-high reasoning effort) through
-the user's existing Codex CLI auth, so no extra API key is required.
-`--pychd-rewrite` upgrades from per-body filling (``--pychd-hybrid``)
-to a single per-module LLM rewrite that both fills bodies *and*
-corrects module-level recovery — the latter is what closes the
-remaining strict_match gap.
-- The **cross-version** rule pass (Python 3.0 – 3.13) walks the same
-  declaration patterns through xdis: every class, function, and
-  import name in the original survives, along with positional and
-  keyword-only default-argument values (recovered across every
-  `MAKE_FUNCTION` layout variant from 3.7 onwards). On the Python
-  3.8 shared corpus, **pychd is the only tool reaching 100%
-  signature-match**, ahead of `decompyle3` (36%), `uncompyle6` (18%),
-  `pycdc` (9%), and `pylingual` (18%, plus 6 modules timed out at
-  60 s per the harness's pylingual budget) — see [Comparison with
-  prior Python decompilers](#comparison-with-prior-python-decompilers).
-- The optional **LLM-assisted** path fills in non-trivial function
-  bodies. The rule pass leaves only those bodies as `UnknownBlock`
-  placeholders; the LLM sees just one body's disassembly at a time
-  plus the recovered signature.
+- **Rule pass** owns everything CPython compiles to a deterministic
+  bytecode shape — imports, class/function declarations, signatures,
+  decorators (incl. arguments), PEP 695 generics, PEP 749 lazy
+  annotations, common one-line bodies (`return self.x`,
+  `return cls(...)`, constructor `self.x = x`, etc.). Output is
+  reproducible offline and audit-friendly. Bodies it can't recover
+  remain as `pass`.
+- **Codex rewrite** runs *once per module* with the disassembly +
+  the rule pass's partial output as context. It fills bodies and
+  fixes module-level statements the rule pass got wrong (PEP 709
+  inlined comprehensions, multi-statement try/except scaffolding,
+  loop bodies the rule pass collapsed). Bytes go in, source comes
+  out — the LLM never sees the original source.
 
 ```mermaid
 flowchart LR
     pyc["foo.pyc"] -- detect magic --> ver["Python version"]
     ver -- 3.14 --> nat["native rule pass<br/>(deterministic, no LLM)"]
-    ver -- "3.0–3.13" --> cv["cross-version rule pass<br/>(xdis-driven, no LLM)"]
+    ver -- "3.0–3.13" --> cv["cross-version rule pass<br/>(xdis, no LLM)"]
     nat --> ir["pychd.ir<br/>(typed IR)"]
     cv --> ir
-    ir -. unrecovered bodies .-> llm["LLM<br/>(per-body fill)"]
+    ir -. partial recovery .-> llm["Codex rewrite<br/>(1 call / module)"]
     ir & llm --> rec["recovered .py"]
     style nat fill:#d4ffd4
     style cv fill:#d4e6ff
     style rec fill:#fff4d4
 ```
 
-## Quick start
+Why bodies-as-`pass` happens in rule-only: a function body that
+compiles to non-trivial control flow (multiple statements, loops,
+branches, `match`) is many-to-one in bytecode — the same opcode
+sequence can come from several different source expressions. Picking
+a representative requires either guessing (the failure mode that
+killed `uncompyle6`/`decompyle3` at Python 3.8) or asking an oracle.
+pychd chooses the oracle, so the rule pass deliberately leaves an
+`UnknownBlock` for the rewrite step to fill.
 
-```bash
-# Install just / uv / Python 3.14 first.
-just setup              # uv sync
-just hooks-install      # prek pre-commit + pre-push hooks
-just test               # 316 tests including 86 syntax-coverage + 31 cross-version recovery (incl. defaults round-trip)
+<details><summary>Detailed rule-only vs hybrid-rewrite ceiling table</summary>
 
-# (Optional, for the cross-decompiler comparison only:)
-#   - pycdc is built from source via CMake + a C++ compiler
-#   - PyLingual ships as a podman image (CPU-only PyTorch, ~2 GB)
-# Both are skipped gracefully if absent. uncompyle6 + decompyle3 are
-# already installed by `just setup`.
-just decompilers-build
+| Axis | Rule-only achieved | Hybrid-rewrite achieved | What the rule pass cannot reach without an oracle |
+|---|---|---|---|
+| `parses` | 100% | 99.8% | — |
+| `signature_match` | 99.8% | 99.8% | 0.2% residual: CPython constant-folded `if False:` blocks. |
+| `declaration_match` | 99.6% | 99.7% | Same. |
+| `strict_match` | 36.0% | **93.2%** | CPython normalises docstrings via `inspect.cleandoc`, folds constants, and re-emits expressions in canonical form. The rewrite re-derives the canonical form from disassembly. |
+| `BS` (behavioral_smoke) | 42.1% | **68.1%** | A `pass`-bodied recovery imports but exposes no callable behaviour beyond signatures. |
+| `BX` (bytecode_exact) | 0.9% | 16.9% | Identical Python source compiles to different `co_consts` ordering across runs. |
+| `BN` (bytecode_normalized) | 7.2% | **48.7%** | Tolerates lnotab + specialised-opcode noise but body recovery still required. |
+| `FC` (Pass@1) | 2.4% | **97.6%** on HumanEval | The recovered module must *behave* like the original. |
 
-# Decompile a single .pyc (default: hybrid mode — rule pass + LLM
-# body fill):
-uv run pychd decompile path/to/module.pyc
+</details>
 
 # Decompile an entire project tree (mirrors structure into output dir):
 uv run pychd decompile path/to/package/ -o recovered/
@@ -437,7 +405,8 @@ passes every assertion. Only difference from the original is a single
 blank line before the trailing `return False`, which the AST
 comparator normalises away.
 
-## Detailed recovery walkthrough — what happens to a real module
+<details>
+<summary><b>Detailed recovery walkthrough — what happens to a real module</b> (deep dive — click to expand)</summary>
 
 This section shows the four-stage recovery pipeline against a single
 example module — what *each* stage adds — so you can see why both the
@@ -603,7 +572,10 @@ fits comfortably).
 This is the mode the headline numbers in [Benchmarks](#benchmarks-run-by-just-paper)
 are reported under.
 
-## How it works (compiler-pipeline perspective)
+</details>
+
+<details>
+<summary><b>How it works — compiler-pipeline perspective</b> (deep dive — click to expand)</summary>
 
 ### Step 1: Python compiles your source to bytecode
 
@@ -739,6 +711,8 @@ parse.
 
 This is the mode the headline benchmark numbers are reported
 under, and the one the README's worked examples show.
+
+</details>
 
 ## What survives compilation, and what doesn't
 
@@ -949,7 +923,7 @@ pychd/
 ├── semantic.py      # five-axis bytecode/behavioral/oracle comparator
 └── main.py          # argparse entry point
 
-tests/  (326 tests total)
+tests/  (337 tests total)
 ├── test_ir.py             # IR node renderers
 ├── test_rules.py          # rule extractor unit tests
 ├── test_versions.py       # magic-number detection across 3.0–3.14
@@ -1081,14 +1055,15 @@ reviewers can read the trade-off directly.
 
 > _This section is generated by `tools/render_paper.py` and_ _committed alongside the code. Re-generate via `just paper`_ _whenever rules.py or any corpus changes._
 
-**Headline:** hybrid-rewrite recovery on **1217 modules / 513,724 LoC**:
+**Headline:** hybrid-rewrite recovery on **1228 modules / 514,349 LoC**
+(includes the 11-module contamination-resistant `synthetic` corpus):
 
-- **Signature match: 1215/1217 (99.8%)** — every public class, function, import, and class-method name in the original survives in the recovered tree.
-- **Declaration match: 1213/1217 (99.7%)** — signature match plus every module/class-level variable and annotated attribute by name.
-- **Strict match: 1134/1217 (93.2%)** — full stripped-AST equality (cosmetic regression telltale; bounded by CPython compiler normalisations).
-- **Behavioral smoke: 830/1217 (68.2%)** — recovered module imports under the producing interpreter and exposes the same public name + signature surface as the original. The semantic axis that tolerates the most compiler normalisations; see [Why not naïve pyc → py → pyc?](#why-not-naïve-pyc--py--pyc) for what `BX`/`BN`/`BS` measure and what each one catches.
-- **Pass@1 (functional correctness): 160/164 (97.6%)** — Decompile-Bench's re-executability oracle, scored on corpora that ship a `check(candidate)` test (HumanEval is currently the only one). The recovered module is imported under the producing interpreter and its entry-point function is fed to the original test suite. A pure rules-only baseline necessarily scores near 0 here because bodies are stubbed; future LLM-assisted or simple-body matcher work shows up directly in this number.
-- **Edit similarity (mean): 0.750** — Decompile-Bench-style character-level Ratcliff-Obershelp ratio averaged over the corpus. 1.0 means byte-identical, 0.0 means entirely dissimilar. A continuous metric that surfaces incremental rule-pass improvements which haven't yet flipped any boolean axis.
+- **Strict AST match: 1144/1228 (93.2%)** — full stripped-AST equality (the regression telltale; bounded by CPython compiler normalisations).
+- **Pass@1 (functional correctness): 160/164 (97.6%)** on HumanEval — Decompile-Bench's re-executability oracle (`check(candidate)`).
+- **Behavioral smoke: 836/1228 (68.1%)** — recovered module imports under the producing interpreter and exposes the same public name + signature surface.
+- **Bytecode-normalized round-trip: 600/1228 (48.9%)** — recompiled output matches the original opcode stream after `CACHE`/`NOP`/specialised-opcode normalisation.
+- **Signature / declaration match: 100.0% / 99.8%** — present mainly so reviewers can sanity-check the rule pass; for fair comparison against body-recovering tools the relevant axis is `strict_match`.
+- **Edit similarity (mean): 0.753** — Ratcliff-Obershelp ratio averaged over the corpus.
 
 #### Per-corpus results
 
@@ -1099,8 +1074,9 @@ reviewers can read the trade-off directly.
 | **pypi**<br/>_PyPI: requests, click, attrs, flask, httpx, rich_ | 189 | 75,377 | 189/189 (100.0%) | 189/189 (100.0%) | 189/189 (100.0%) | 182/189 (96.3%) | 38/189 (20.1%) | 118/189 (62.4%) | 64/189 (33.9%) | n/a | 0.742 |
 | **pypi-top20**<br/>_PyPI top-20 pure-Python packages_ | 682 | 281,925 | 682/682 (100.0%) | 682/682 (100.0%) | 680/682 (99.7%) | 617/682 (90.5%) | 103/682 (15.1%) | 231/682 (33.9%) | 465/682 (68.2%) | n/a | 0.693 |
 | **humaneval**<br/>_OpenAI HumanEval (164 problems)_ | 164 | 3,361 | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 2/164 (1.2%) | 150/164 (91.5%) | 163/164 (99.4%) | 160/164 (97.6%) | 0.922 |
-| **cursor-sdk**<br/>_cursor-sdk 0.1.5 (top-level modules)_ | 19 | 6,883 | 17/19 (89.5%) | 17/19 (89.5%) | 17/19 (89.5%) | 17/19 (89.5%) | 3/19 (15.8%) | 4/19 (21.1%) | 1/19 (5.3%) | n/a | 0.794 |
-| **aggregate** | **1217** | **513,724** | **1215/1217 (99.8%)** | **1215/1217 (99.8%)** | **1213/1217 (99.7%)** | **1134/1217 (93.2%)** | **206/1217 (16.9%)** | **594/1217 (48.8%)** | **830/1217 (68.2%)** | **160/164 (97.6%)** | **0.750** |
+| **cursor-sdk**<br/>_cursor-sdk 0.1.5 (top-level modules)_ | 19 | 6,883 | 19/19 (100.0%) | 19/19 (100.0%) | 19/19 (100.0%) | 16/19 (84.2%) | 0/19 (0.0%) | 6/19 (31.6%) | 1/19 (5.3%) | n/a | 0.887 |
+| **synthetic**<br/>_Contamination-resistant hand-written code (2026-05-26)_ | 11 | 625 | 11/11 (100.0%) | 11/11 (100.0%) | 11/11 (100.0%) | 11/11 (100.0%) | 1/11 (9.1%) | 4/11 (36.4%) | 6/11 (54.5%) | n/a | 0.881 |
+| **aggregate** | **1228** | **514,349** | **1228/1228 (100.0%)** | **1228/1228 (100.0%)** | **1226/1228 (99.8%)** | **1144/1228 (93.2%)** | **204/1228 (16.8%)** | **600/1228 (48.9%)** | **836/1228 (68.1%)** | **160/164 (97.6%)** | **0.753** |
 
 #### Visualisation
 
@@ -1125,10 +1101,47 @@ Every Python 3.x release routes through a rule pass: 3.14 hits the **native** wa
 ### Comparison with prior Python decompilers
 
 Four publicly-available decompilers compete with pychd on Python
-3.x bytecode. Each is scored against the same corpus that pychd is,
-using the same eight-axis metric. Numbers reproduced from papers are
-*not* used — every figure below comes from running the named version
-of each tool against the locally-built corpus.
+3.x bytecode. Every figure below comes from running the named version
+of each tool against the locally-built corpus on this host — no paper
+numbers are reused.
+
+**The headline comparison axis is `strict_match`** (stripped-AST
+equality). pychd's `signature_match` / `declaration_match` lead is
+real but partially structural — pychd stubs bodies with `pass` when
+the rule pass can't recover them, which preserves declarations even
+when the recovery is otherwise incomplete. `strict_match` is the
+axis that compares apples-to-apples against body-recovering tools
+like `decompyle3`.
+
+#### Contamination-resistant head-to-head — synthetic Python 3.8
+
+The eight synthetic modules (see [§Contamination resistance](#contamination-resistance))
+compiled with Python 3.8 and decompiled by each available 3.8-capable
+tool. None of these modules existed before 2026-05-26, so any tool
+that scores high here cannot be memorising.
+
+| Tool | parses | sig | decl | **strict** | BN | BS | ED |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **pychd (hybrid-rewrite:codex)** | 8/8 | 8/8 | 8/8 | **8/8** | **8/8** | 5/8 | 0.968 |
+| `decompyle3` 3.9.3 | 6/8 | 6/8 | 6/8 | 3/8 | 0/8 | 0/8 | 0.551 |
+| `uncompyle6` 3.9.3 | not run on this corpus yet | — | — | — | — | — | — |
+
+Source: `assets/_synthetic_comparison.json` (commit-tracked). Reproduce:
+
+```bash
+uv run python tools/build_corpora.py --only synthetic
+# then compile with Python 3.8 and run pychd + decompyle3 — see
+# README §Contamination resistance for the exact commands.
+```
+
+#### Broader head-to-head — 23-module stdlib + PyPI subset
+
+Below is the older, broader comparison against a 23-module mix of
+stdlib + curated-PyPI modules. The PyPI subset overlaps published
+corpora (`six`, `packaging`, `certifi`, `idna`, `charset_normalizer`)
+that the Codex backend almost certainly saw at training time — so
+take pychd's wins on this corpus with the contamination caveat in
+mind. The synthetic head-to-head above is the cleaner number.
 
 | Tool | Source | Install | Coverage | Best Py version (this run) |
 |---|---|---|---|---|
@@ -1142,10 +1155,7 @@ Python version**, not forced down to a shared 3.8 baseline. uncompyle6
 and decompyle3 are scored on 3.8 (their newest supported release),
 pycdc on 3.10, and PyLingual on 3.13. pychd is scored on every one of
 those three versions so each row of the cross-version matrix below
-shows pychd vs the competitor's best-case Python. The corpus is a
-curated subset of real-world code: stdlib modules and a curated PyPI
-subset (`six`, `packaging`, `certifi`, `idna`, `charset_normalizer` —
-first three top-level modules of each).
+shows pychd vs the competitor's best-case Python.
 
 PyFET (Ahad et al., S&P 2023) is a bytecode *transformer* rather
 than a standalone decompiler — it rewrites .pyc files so they
@@ -1196,12 +1206,12 @@ Run-time notes for reviewers reproducing the comparison:
 | Tool | Py 3.8 | Py 3.10 | Py 3.13 |
 |---|:---:|:---:|:---:|
 | **pychd (hybrid-rewrite:codex)** | ✅ 23/23 | ✅ 23/23 | ⚠ 20/23 |
-| **uncompyle6** | ⚠ 4/23 | failed (out of scope (preferred: ) | failed (out of scope (preferred: ) |
-| **decompyle3** | ⚠ 12/23 | failed (out of scope (preferred: ) | failed (out of scope (preferred: ) |
-| **pycdc** | failed (out of scope (preferred: ) | ⚠ 4/23 | failed (out of scope (preferred: ) |
-| **pylingual** | failed (out of scope (preferred: ) | failed (out of scope (preferred: ) | ⚠ 8/23 |
+| **uncompyle6** | ⚠ 4/23 | — (not run) | — (not run) |
+| **decompyle3** | ⚠ 12/23 | — (not run) | — (not run) |
+| **pycdc** | — (not run) | ⚠ 4/23 | — (not run) |
+| **pylingual** | — (not run) | — (not run) | ⚠ 8/23 |
 
-Each cell shows the ``signature_match`` count for that (tool, Python version) pair against the same .pyc corpus, or `❌ 0/N` when the tool ran but recovered no signatures, or `failed (…)` when every module raised, or `not installed` when the tool's binary / podman image wasn't available on this host. Per-version detail tables (all eight axes) follow below.
+Each cell shows the ``signature_match`` count for that (tool, Python version) pair against the same .pyc corpus, or `❌ 0/N` when the tool ran but recovered no signatures, or `failed (…)` when every module raised, `— (not run)` when the tool is pinned to a different Python release (see preferred-version table above), or `not installed` when the tool's binary / podman image wasn't available on this host. Per-version detail tables (all eight axes) follow below.
 
 <details><summary>Python 3.8 — all eight axes</summary>
 
@@ -1252,16 +1262,27 @@ above (currently HumanEval only).
 
 The static axes measure how close the recovered source *reads* to
 the original; the semantic and similarity axes measure how close it
-*means* and *reads textually*. The trade-off is visible across the
-four competing tools:
+*means* and *reads textually*. **The fairest single column to compare
+on is `Strict`** (stripped-AST equality after dropping bodies,
+annotations and decorators):
 
-* **pychd dominates on `Sig`/`Decl`** because the rule pass preserves
-  declarations losslessly across every 3.x release. Bodies are
-  stubbed with `pass`, so the bytecode-level axes (`BX`/`BN`) are
-  near-zero and `ED` lands below body-recovering tools by
-  construction — *that's not a bug, it's the design contract for the
-  rules-only mode*. `BS` is non-zero whenever the recovered stubs
-  still import and present the same surface.
+| Tool | Py | Strict | BN | ED |
+|---|---|---:|---:|---:|
+| **pychd (hybrid-rewrite:codex)** | 3.8 | **16/23** | 15/23 | 0.724 |
+| **pychd (hybrid-rewrite:codex)** | 3.13 | **17/23** | 11/23 | 0.723 |
+| `decompyle3` | 3.8 | 4/23 | 4/23 | 0.603 |
+| `uncompyle6` | 3.8 | 3/23 | 3/23 | 0.483 |
+| `pycdc` | 3.10 | 1/23 | 1/23 | 0.252 |
+| `pylingual` | 3.13 | 5/23 | 3/23 | 0.311 |
+
+Each external tool is scored on its own preferred Python version
+(uncompyle6 / decompyle3 → 3.8, pycdc → 3.10, pylingual → 3.13).
+pychd's hybrid-rewrite is run on the same `.pyc` file each tool
+receives. pychd's `Sig`/`Decl` lead in the per-version tables above
+(99–100% vs 17–50%) is partially structural — the rule pass preserves
+declarations losslessly even when bodies can't be recovered — so
+`Strict` is the cleaner head-to-head number.
+
 * **decompyle3** commits to a full body reconstruction; when the
   reconstruction round-trips, `BN` / `BS` / `ED` benefit. When it
   doesn't, the textual overlap still drags `ED` upward, but the
@@ -1323,7 +1344,7 @@ just paper
 ```bash
 uv sync                                    # 1. dependencies
 uv run python tools/build_corpora.py       # 2. download corpora to /tmp
-uv run pytest tests/ -q                    # 3. 316 tests
+uv run pytest tests/ -q                    # 3. 337 tests
 uv run python tools/render_paper.py        # 4. regenerate README results
                                            #    + assets/_results.json
                                            #    + assets/_comparison.json

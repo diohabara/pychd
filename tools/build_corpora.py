@@ -461,6 +461,32 @@ def build_numpy(dst: Path, *, force: bool) -> int:
 # ---------------------------------------------------------------------------
 
 
+def build_synthetic(dst: Path, *, force: bool) -> int:
+    """Copy the in-repo synthetic corpus into *dst*.
+
+    The synthetic corpus is hand-written contamination-resistant code
+    that ships in ``tools/synthetic_corpus/`` so the rule pass and the
+    Codex rewrite have to recover modules that **were not** in any
+    public training corpus before 2026-05-26. The originals are vendored
+    in this repo (not downloaded) so reviewers always build against the
+    same hash. See README §Contamination resistance.
+    """
+    src_root = Path(__file__).resolve().parent / "synthetic_corpus"
+    if not src_root.is_dir():
+        raise FileNotFoundError(
+            f"synthetic corpus source missing: {src_root}. "
+            "It ships with the repo; check your checkout."
+        )
+    dst.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for src in sorted(src_root.glob("*.py")):
+        dest = dst / src.name
+        if force or not dest.is_file() or dest.read_bytes() != src.read_bytes():
+            dest.write_bytes(src.read_bytes())
+        n += 1
+    return n
+
+
 def build_cursor_sdk(dst: Path, *, force: bool) -> int:
     """Download cursor-sdk's macOS arm64 wheel and extract just the .py files."""
     dst.mkdir(parents=True, exist_ok=True)
@@ -514,6 +540,10 @@ CORPORA = {
     "pypi-top20": ("20 additional popular pure-Python PyPI packages", build_pypi_top20),
     "humaneval": ("HumanEval canonical solutions (164 problems)", build_humaneval),
     "cursor-sdk": ("cursor-sdk 0.1.5 (top-level modules)", build_cursor_sdk),
+    "synthetic": (
+        "Contamination-resistant synthetic modules (written 2026-05-26)",
+        build_synthetic,
+    ),
 }
 
 
@@ -558,6 +588,8 @@ def main(argv: list[str] | None = None) -> int:
             n = build_stdlib_full(dst, force=args.force)
         elif name == "humaneval":
             n = build_humaneval(dst, force=args.force)
+        elif name == "synthetic":
+            n = build_synthetic(dst, force=args.force)
         else:  # pragma: no cover
             n = builder(dst)  # type: ignore[call-arg]
         print(f"  -> {n} .py files at {dst}")

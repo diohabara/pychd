@@ -60,6 +60,7 @@ from pychd.decompile import Backend, Mode  # noqa: E402
 from tools.benchmark import ModuleMetrics, measure_module  # noqa: E402
 
 CORPORA = [
+    ("synthetic", "Contamination-resistant synthetic modules (2026-05-26)"),
     ("stdlib", "Curated stdlib (10 modules)"),
     ("stdlib-full", "Full Python 3.14 stdlib (single-file modules)"),
     ("pypi", "PyPI: requests, click, attrs, flask, httpx, rich"),
@@ -500,8 +501,12 @@ def _render_coverage_matrix(per_version: dict[str, dict[str, dict]]) -> str:
                 err = data.get("error") or "no data"
                 if "not installed" in err.lower() or "not built" in err.lower():
                     cells.append("not installed")
+                elif "out of scope" in err.lower():
+                    # Tool was skipped on this Python version because
+                    # it's pinned to a different one — not a failure.
+                    cells.append("— (not run)")
                 else:
-                    cells.append(f"failed ({err[:25]})")
+                    cells.append(f"failed ({err})")
                 continue
             sig = data.get("signature_match", 0)
             pct = 100 * sig / max(1, n)
@@ -546,7 +551,9 @@ def _render_comparison_block(comparison: dict[str, Any]) -> str:
             "Each cell shows the ``signature_match`` count for that"
             " (tool, Python version) pair against the same .pyc corpus,"
             " or `❌ 0/N` when the tool ran but recovered no"
-            " signatures, or `failed (…)` when every module raised, or"
+            " signatures, or `failed (…)` when every module raised,"
+            " `— (not run)` when the tool is pinned to a different"
+            " Python release (see preferred-version table above), or"
             " `not installed` when the tool's binary / podman image"
             " wasn't available on this host. Per-version detail tables"
             " (all eight axes) follow below.\n"

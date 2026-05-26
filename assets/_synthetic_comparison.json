@@ -1,0 +1,199 @@
+{
+  "corpus": "synthetic-3.8",
+  "python_version": "3.8",
+  "n_modules": 8,
+  "tools": {
+    "pychd (hybrid-rewrite:codex)": {
+      "n": 8,
+      "parses": 8,
+      "sig": 8,
+      "decl": 8,
+      "strict": 8,
+      "bx": 0,
+      "bn": 8,
+      "bs": 5,
+      "edit_similarity_mean": 0.9676987398141412,
+      "per_module": [
+        {
+          "name": "arclight.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": true,
+          "bs": false,
+          "edit_similarity": 0.981203007518797
+        },
+        {
+          "name": "exception_chain.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": true,
+          "bs": true,
+          "edit_similarity": 0.9622199933132731
+        },
+        {
+          "name": "lens_compose.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": true,
+          "bs": false,
+          "edit_similarity": 0.9994259471871412
+        },
+        {
+          "name": "octrope.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": true,
+          "bs": false,
+          "edit_similarity": 0.9735814380886745
+        },
+        {
+          "name": "reservoir.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": true,
+          "bs": true,
+          "edit_similarity": 0.993073047858942
+        },
+        {
+          "name": "streaming_csv.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": true,
+          "bs": true,
+          "edit_similarity": 0.9717548076923077
+        },
+        {
+          "name": "typecheck.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": true,
+          "bs": true,
+          "edit_similarity": 0.9104151493080845
+        },
+        {
+          "name": "zip_promise.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": true,
+          "bs": true,
+          "edit_similarity": 0.9499165275459098
+        }
+      ]
+    },
+    "decompyle3": {
+      "n": 8,
+      "parses": 6,
+      "sig": 6,
+      "decl": 6,
+      "strict": 3,
+      "bx": 0,
+      "bn": 0,
+      "bs": 0,
+      "edit_similarity_mean": 0.5513206718232986,
+      "per_module": [
+        {
+          "name": "arclight.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": false,
+          "bx": false,
+          "bn": false,
+          "bs": false,
+          "edit_similarity": 0.8193011647254576
+        },
+        {
+          "name": "exception_chain.py",
+          "parses": false,
+          "error": "unterminated string literal (detected at line 39) (<unknown>, line 39)",
+          "edit_similarity": 0.49507948523845574
+        },
+        {
+          "name": "lens_compose.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": false,
+          "bs": false,
+          "edit_similarity": 0.7457988797012537
+        },
+        {
+          "name": "octrope.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": false,
+          "bx": false,
+          "bn": false,
+          "bs": false,
+          "edit_similarity": 0.14467907171231445
+        },
+        {
+          "name": "reservoir.py",
+          "parses": false,
+          "error": "unterminated string literal (detected at line 14) (<unknown>, line 14)",
+          "edit_similarity": 0.19959128065395096
+        },
+        {
+          "name": "streaming_csv.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": false,
+          "bs": false,
+          "edit_similarity": 0.7774464624559502
+        },
+        {
+          "name": "typecheck.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": false,
+          "bx": false,
+          "bn": false,
+          "bs": false,
+          "edit_similarity": 0.7152361942781105
+        },
+        {
+          "name": "zip_promise.py",
+          "parses": true,
+          "sig": true,
+          "decl": true,
+          "strict": true,
+          "bx": false,
+          "bn": false,
+          "bs": false,
+          "edit_similarity": 0.5134328358208955
+        }
+      ]
+    }
+  }
+}
