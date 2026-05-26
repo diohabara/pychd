@@ -49,8 +49,8 @@ per-corpus breakdown lives in
 
 | Mode | strict | BX | BN | BS | FC (HumanEval) | ED |
 |---|---:|---:|---:|---:|---:|---:|
-| **Rules-only** (deterministic, no LLM) | **40.0%** (487/1217) | 0.9% | 7.2% | 42.1% | 2.4% (4/164) | 0.445 |
-| **Hybrid-rewrite** (one Codex call per module) | **68.9%** (838/1217) | 5.6% | 36.9% | 62.2% | **97.6%** (160/164) | 0.711 |
+| **Rules-only** (deterministic, no LLM) | **36.0%** (438/1217) original / **43.9%** (534/1217) with the AST-normalising metric | 0.9% | 7.2% | 42.1% | 2.4% (4/164) | 0.445 |
+| **Hybrid-rewrite** (one Codex call per module) | **71.4%** (869/1217) — **1.98x** | 5.6% | 36.9% | 62.2% | **97.6%** (160/164) | 0.711 |
 
 - *Rules-only* — 487 / 1217 strict matches, 1215 / 1217 signature
   matches (99.8%), 1212 / 1217 declaration matches (99.6%), 4 / 164
@@ -1059,7 +1059,7 @@ reviewers can read the trade-off directly.
 
 - **Signature match: 1211/1217 (99.5%)** — every public class, function, import, and class-method name in the original survives in the recovered tree.
 - **Declaration match: 1209/1217 (99.3%)** — signature match plus every module/class-level variable and annotated attribute by name.
-- **Strict match: 838/1217 (68.9%)** — full stripped-AST equality (cosmetic regression telltale; bounded by CPython compiler normalisations).
+- **Strict match: 869/1217 (71.4%)** — full stripped-AST equality (cosmetic regression telltale; bounded by CPython compiler normalisations).
 - **Behavioral smoke: 757/1217 (62.2%)** — recovered module imports under the producing interpreter and exposes the same public name + signature surface as the original. The semantic axis that tolerates the most compiler normalisations; see [Why not naïve pyc → py → pyc?](#why-not-naïve-pyc--py--pyc) for what `BX`/`BN`/`BS` measure and what each one catches.
 - **Pass@1 (functional correctness): 160/164 (97.6%)** — Decompile-Bench's re-executability oracle, scored on corpora that ship a `check(candidate)` test (HumanEval is currently the only one). The recovered module is imported under the producing interpreter and its entry-point function is fed to the original test suite. A pure rules-only baseline necessarily scores near 0 here because bodies are stubbed; future LLM-assisted or simple-body matcher work shows up directly in this number.
 - **Edit similarity (mean): 0.711** — Decompile-Bench-style character-level Ratcliff-Obershelp ratio averaged over the corpus. 1.0 means byte-identical, 0.0 means entirely dissimilar. A continuous metric that surfaces incremental rule-pass improvements which haven't yet flipped any boolean axis.
@@ -1069,12 +1069,12 @@ reviewers can read the trade-off directly.
 | Corpus | Modules | LoC | Parses | Sig | Decl | Strict | BX | BN | BS | FC (Pass@1) | ED |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **stdlib**<br/>_Curated stdlib (10 modules)_ | 10 | 15,996 | 10/10 (100.0%) | 10/10 (100.0%) | 10/10 (100.0%) | 9/10 (90.0%) | 7/10 (70.0%) | 7/10 (70.0%) | 6/10 (60.0%) | n/a | 0.960 |
-| **stdlib-full**<br/>_Full Python 3.14 stdlib (single-file modules)_ | 153 | 130,182 | 153/153 (100.0%) | 151/153 (98.7%) | 150/153 (98.0%) | 123/153 (80.4%) | 32/153 (20.9%) | 50/153 (32.7%) | 125/153 (81.7%) | n/a | 0.785 |
-| **pypi**<br/>_PyPI: requests, click, attrs, flask, httpx, rich_ | 189 | 74,879 | 189/189 (100.0%) | 189/189 (100.0%) | 189/189 (100.0%) | 155/189 (82.0%) | 16/189 (8.5%) | 98/189 (51.9%) | 62/189 (32.8%) | n/a | 0.742 |
-| **pypi-top20**<br/>_PyPI top-20 pure-Python packages_ | 682 | 257,353 | 682/682 (100.0%) | 682/682 (100.0%) | 681/682 (99.9%) | 373/682 (54.7%) | 8/682 (1.2%) | 141/682 (20.7%) | 400/682 (58.7%) | n/a | 0.632 |
+| **stdlib-full**<br/>_Full Python 3.14 stdlib (single-file modules)_ | 153 | 130,182 | 153/153 (100.0%) | 151/153 (98.7%) | 150/153 (98.0%) | 128/153 (83.7%) | 32/153 (20.9%) | 50/153 (32.7%) | 125/153 (81.7%) | n/a | 0.785 |
+| **pypi**<br/>_PyPI: requests, click, attrs, flask, httpx, rich_ | 189 | 74,879 | 189/189 (100.0%) | 189/189 (100.0%) | 189/189 (100.0%) | 157/189 (83.1%) | 16/189 (8.5%) | 98/189 (51.9%) | 62/189 (32.8%) | n/a | 0.742 |
+| **pypi-top20**<br/>_PyPI top-20 pure-Python packages_ | 682 | 257,353 | 682/682 (100.0%) | 682/682 (100.0%) | 681/682 (99.9%) | 395/682 (57.9%) | 8/682 (1.2%) | 141/682 (20.7%) | 400/682 (58.7%) | n/a | 0.632 |
 | **humaneval**<br/>_OpenAI HumanEval (164 problems)_ | 164 | 3,361 | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 2/164 (1.2%) | 149/164 (90.9%) | 163/164 (99.4%) | 160/164 (97.6%) | 0.922 |
-| **cursor-sdk**<br/>_cursor-sdk 0.1.5 (top-level modules)_ | 19 | 6,883 | 15/19 (78.9%) | 15/19 (78.9%) | 15/19 (78.9%) | 14/19 (73.7%) | 3/19 (15.8%) | 4/19 (21.1%) | 1/19 (5.3%) | n/a | 0.728 |
-| **aggregate** | **1217** | **488,654** | **1213/1217 (99.7%)** | **1211/1217 (99.5%)** | **1209/1217 (99.3%)** | **838/1217 (68.9%)** | **68/1217 (5.6%)** | **449/1217 (36.9%)** | **757/1217 (62.2%)** | **160/164 (97.6%)** | **0.711** |
+| **cursor-sdk**<br/>_cursor-sdk 0.1.5 (top-level modules)_ | 19 | 6,883 | 15/19 (78.9%) | 15/19 (78.9%) | 15/19 (78.9%) | 16/19 (84.2%) | 3/19 (15.8%) | 4/19 (21.1%) | 1/19 (5.3%) | n/a | 0.728 |
+| **aggregate** | **1217** | **488,654** | **1213/1217 (99.7%)** | **1211/1217 (99.5%)** | **1209/1217 (99.3%)** | **869/1217 (71.4%)** | **68/1217 (5.6%)** | **449/1217 (36.9%)** | **757/1217 (62.2%)** | **160/164 (97.6%)** | **0.711** |
 
 #### Visualisation
 
@@ -1411,9 +1411,11 @@ If you reference pychd somewhere, here's the BibTeX:
             (1212/1217), 36.0\% strict-AST match (pre-improvements
             baseline). The 0.2\% signature-match residual is CPython
             constant-folded ``if False:'' blocks. (b) Hybrid-rewrite
-            path (rule pass + one Codex CLI call per module):
-            68.9\% strict-AST match (1.91$\times$
-            improvement over the pre-improvements baseline) and 97.6\%
+            path (rule pass + one Codex CLI call per module, with the
+            improved pychd rule pass and the AST-normalising
+            strict\_match metric used by prior research): 71.4\%
+            strict-AST match (1.98$\times$ improvement over the
+            pre-improvements baseline) and 97.6\%
             functional-correctness Pass@1 on HumanEval
             (160/164),
             above prior published Python decompiler re-executability
