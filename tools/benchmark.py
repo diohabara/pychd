@@ -195,7 +195,7 @@ _FOLDABLE_BINOPS: dict[type, object] = {
     ast.Div: lambda a, b: a / b,
     ast.FloorDiv: lambda a, b: a // b,
     ast.Mod: lambda a, b: a % b,
-    ast.Pow: lambda a, b: a ** b,
+    ast.Pow: lambda a, b: a**b,
 }
 
 
@@ -277,9 +277,7 @@ def _normalise_imports(tree: ast.AST) -> ast.AST:
                     setattr(node, attr, visit(getattr(node, attr)))
             if isinstance(node, ast.Try):
                 node.handlers = [
-                    ast.ExceptHandler(
-                        type=h.type, name=h.name, body=visit(h.body)
-                    )
+                    ast.ExceptHandler(type=h.type, name=h.name, body=visit(h.body))
                     for h in node.handlers
                 ]
             if isinstance(node, ast.With):

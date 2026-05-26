@@ -101,7 +101,7 @@ def _gather_corpus(
         if cache_file.is_file():
             try:
                 payload = json.loads(cache_file.read_text())
-            except (OSError, json.JSONDecodeError):
+            except OSError, json.JSONDecodeError:
                 payload = None
             if isinstance(payload, list):
                 from dataclasses import fields as _dc_fields
