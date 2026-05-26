@@ -438,10 +438,13 @@ def render_comparative_benchmark(
             # Replace pure zeros with a 1.2-unit floor so the bar is
             # visible as "explicitly zero" rather than "missing"
             # (codex review #1: zero bars vanish into the panel
-            # background). The hover/label text still shows the
-            # accurate value.
+            # background). The visible-stub trick is the *only*
+            # visual cue we keep for low values; we deliberately do
+            # NOT print per-bar value labels because mixing labelled
+            # and unlabelled bars in the same panel reads as a chart
+            # bug (user feedback). Magnitudes are read off the
+            # y-axis instead.
             y_drawn = [max(v, 1.2) for v in y_values]
-            text_labels = [f"{v:.0f}" if v < 5 else "" for v in y_values]
             fig.add_bar(
                 name=metric_name,
                 x=x_labels,
@@ -450,9 +453,6 @@ def render_comparative_benchmark(
                 marker_color=color,
                 marker_line_color="#222222",
                 marker_line_width=[0.6 if v < 1.0 else 0 for v in y_values],
-                text=text_labels,
-                textposition="outside",
-                textfont=dict(size=10, color="#222222"),
                 legendgroup=metric_name,
                 showlegend=(pi == 1),
                 hovertemplate=(
