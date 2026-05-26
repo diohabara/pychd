@@ -10,6 +10,8 @@ annotations) followed by **one** Codex CLI call per module to fill the
 bodies and module-level statements the rule pass can't recover from
 opcodes alone.
 
+![Recovery rate by corpus — Sig / Decl / Strict / BN / BS](assets/recovery_by_corpus.svg)
+
 **Headline result — `hybrid-rewrite` mode, 1,228 modules, 514K LoC:**
 
 | Metric | Score |
@@ -33,6 +35,8 @@ the source):
 See [§Contamination resistance](#contamination-resistance) for the
 methodology and [§Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)
 for the broader 23-module stdlib + PyPI head-to-head.
+
+![pychd vs uncompyle6 / decompyle3 / pycdc / PyLingual on the 23-module stdlib + PyPI corpus](assets/comparison_decompilers.svg)
 
 > **A note on LLM contamination.** A meaningful share of the headline
 > corpus (stdlib, popular PyPI packages, HumanEval) was almost
@@ -58,13 +62,15 @@ model. No extra API key needed.
 
 ## Table of contents
 
-- [Headline numbers](#pychd) (top of file)
+- [Pipeline at a glance](#pipeline-at-a-glance)
 - [Contamination resistance](#contamination-resistance)
-- [Per-corpus breakdown](#per-corpus-results)
-- [Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)
-- [How it works (compiler-pipeline perspective)](#how-it-works-compiler-pipeline-perspective)
-- [Cross-version support](#cross-version-support)
+- [What you get from each mode](#what-you-get-from-each-mode) — four worked examples
+- [Detailed recovery walkthrough](#detailed-recovery-walkthrough--what-happens-to-a-real-module) — step-by-step on one module
+- [How it works — compiler-pipeline perspective](#how-it-works--compiler-pipeline-perspective)
 - [What survives compilation, and what doesn't](#what-survives-compilation-and-what-doesnt)
+- [Cross-version support](#cross-version-support)
+- [Benchmarks](#benchmarks-run-by-just-paper)
+- [Comparison with prior Python decompilers](#comparison-with-prior-python-decompilers)
 - [Reproducibility](#reproducibility)
 - [Scope](#scope)
 - [Citing](#citing)
@@ -123,14 +129,9 @@ Additional defensive evidence:
 - **`cursor-sdk` 0.1.5 is a small private-style SDK** with limited
   GitHub reach, included as another low-contamination target.
 
-## Headline numbers
+## Pipeline at a glance
 
-| Mode | strict | BX | BN | BS | FC (HumanEval) | ED |
-|---|---:|---:|---:|---:|---:|---:|
-| **Hybrid-rewrite** (one Codex call per module — **default**) | **93.2%** (1144/1228) | 16.8% | 48.9% | 68.1% | **97.6%** (160/164) | 0.753 |
-| Rules-only (deterministic, no LLM, offline, free — subset baseline) | 36.0% (438/1217) | 0.9% | 7.2% | 42.1% | 2.4% (4/164) | 0.445 |
-
-Why pychd's recovery is decomposable into two paths:
+pychd routes every `.pyc` through two passes:
 
 - **Rule pass** owns everything CPython compiles to a deterministic
   bytecode shape — imports, class/function declarations, signatures,
@@ -145,6 +146,11 @@ Why pychd's recovery is decomposable into two paths:
   inlined comprehensions, multi-statement try/except scaffolding,
   loop bodies the rule pass collapsed). Bytes go in, source comes
   out — the LLM never sees the original source.
+
+| Mode | strict | BX | BN | BS | FC (HumanEval) | ED |
+|---|---:|---:|---:|---:|---:|---:|
+| **Hybrid-rewrite** (one Codex call per module — **default**) | **93.2%** (1144/1228) | 16.8% | 48.9% | 68.1% | **97.6%** (160/164) | 0.753 |
+| Rules-only (deterministic, no LLM, offline, free) | 36.0% (438/1217) | 0.9% | 7.2% | 42.1% | 2.4% (4/164) | 0.445 |
 
 ```mermaid
 flowchart LR
@@ -169,21 +175,22 @@ killed `uncompyle6`/`decompyle3` at Python 3.8) or asking an oracle.
 pychd chooses the oracle, so the rule pass deliberately leaves an
 `UnknownBlock` for the rewrite step to fill.
 
-<details><summary>Detailed rule-only vs hybrid-rewrite ceiling table</summary>
+### Rule-only vs hybrid-rewrite ceiling
 
 | Axis | Rule-only achieved | Hybrid-rewrite achieved | What the rule pass cannot reach without an oracle |
 |---|---|---|---|
-| `parses` | 100% | 99.8% | — |
-| `signature_match` | 99.8% | 99.8% | 0.2% residual: CPython constant-folded `if False:` blocks. |
-| `declaration_match` | 99.6% | 99.7% | Same. |
+| `parses` | 100% | 100% | — |
+| `signature_match` | 99.8% | 100% | 0.2% rule-only residual: CPython constant-folded `if False:` blocks. |
+| `declaration_match` | 99.6% | 99.8% | Same. |
 | `strict_match` | 36.0% | **93.2%** | CPython normalises docstrings via `inspect.cleandoc`, folds constants, and re-emits expressions in canonical form. The rewrite re-derives the canonical form from disassembly. |
 | `BS` (behavioral_smoke) | 42.1% | **68.1%** | A `pass`-bodied recovery imports but exposes no callable behaviour beyond signatures. |
-| `BX` (bytecode_exact) | 0.9% | 16.9% | Identical Python source compiles to different `co_consts` ordering across runs. |
-| `BN` (bytecode_normalized) | 7.2% | **48.7%** | Tolerates lnotab + specialised-opcode noise but body recovery still required. |
+| `BX` (bytecode_exact) | 0.9% | 16.8% | Identical Python source compiles to different `co_consts` ordering across runs. |
+| `BN` (bytecode_normalized) | 7.2% | **48.9%** | Tolerates lnotab + specialised-opcode noise but body recovery still required. |
 | `FC` (Pass@1) | 2.4% | **97.6%** on HumanEval | The recovered module must *behave* like the original. |
 
-</details>
+## More CLI examples
 
+```bash
 # Decompile an entire project tree (mirrors structure into output dir):
 uv run pychd decompile path/to/package/ -o recovered/
 
@@ -405,8 +412,7 @@ passes every assertion. Only difference from the original is a single
 blank line before the trailing `return False`, which the AST
 comparator normalises away.
 
-<details>
-<summary><b>Detailed recovery walkthrough — what happens to a real module</b> (deep dive — click to expand)</summary>
+## Detailed recovery walkthrough — what happens to a real module
 
 This section shows the four-stage recovery pipeline against a single
 example module — what *each* stage adds — so you can see why both the
@@ -572,10 +578,7 @@ fits comfortably).
 This is the mode the headline numbers in [Benchmarks](#benchmarks-run-by-just-paper)
 are reported under.
 
-</details>
-
-<details>
-<summary><b>How it works — compiler-pipeline perspective</b> (deep dive — click to expand)</summary>
+## How it works — compiler-pipeline perspective
 
 ### Step 1: Python compiles your source to bytecode
 
@@ -711,8 +714,6 @@ parse.
 
 This is the mode the headline benchmark numbers are reported
 under, and the one the README's worked examples show.
-
-</details>
 
 ## What survives compilation, and what doesn't
 
