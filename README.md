@@ -1195,11 +1195,11 @@ Run-time notes for reviewers reproducing the comparison:
 
 | Tool | Py 3.8 | Py 3.10 | Py 3.13 |
 |---|:---:|:---:|:---:|
-| **pychd (rules-only)** | ✅ 23/23 | ✅ 23/23 | ⚠ 13/23 |
+| **pychd (hybrid-rewrite:codex)** | ✅ 23/23 | ✅ 23/23 | ⚠ 20/23 |
 | **uncompyle6** | ⚠ 4/23 | failed (out of scope (preferred: ) | failed (out of scope (preferred: ) |
 | **decompyle3** | ⚠ 12/23 | failed (out of scope (preferred: ) | failed (out of scope (preferred: ) |
 | **pycdc** | failed (out of scope (preferred: ) | ⚠ 4/23 | failed (out of scope (preferred: ) |
-| **pylingual** | failed (out of scope (preferred: ) | failed (out of scope (preferred: ) | ⚠ 7/23 |
+| **pylingual** | failed (out of scope (preferred: ) | failed (out of scope (preferred: ) | ⚠ 8/23 |
 
 Each cell shows the ``signature_match`` count for that (tool, Python version) pair against the same .pyc corpus, or `❌ 0/N` when the tool ran but recovered no signatures, or `failed (…)` when every module raised, or `not installed` when the tool's binary / podman image wasn't available on this host. Per-version detail tables (all eight axes) follow below.
 
@@ -1208,9 +1208,9 @@ Each cell shows the ``signature_match`` count for that (tool, Python version) pa
 
 | Tool | Version | Sig | Decl | Strict | BX | BN | BS | ED |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| **pychd (rules-only)** | main (this repo) | 23/23 | 22/23 | 3/23 | 0/23 | 1/23 | 6/23 | 0.328 |
+| **pychd (hybrid-rewrite:codex)** | main (this repo) | 23/23 | 23/23 | 16/23 | 5/23 | 15/23 | 14/23 | 0.724 |
 | **uncompyle6** | uncompyle6, version 3.9.3 | 4/23 | 4/23 | 3/23 | 0/23 | 3/23 | 1/23 | 0.483 |
-| **decompyle3** | 3.9.3 (PyPI) | 12/23 | 11/23 | 3/23 | 0/23 | 4/23 | 8/23 | 0.603 |
+| **decompyle3** | 3.9.3 (PyPI) | 12/23 | 11/23 | 4/23 | 0/23 | 4/23 | 8/23 | 0.603 |
 | **pycdc** | (skipped — see preferred-version row) | _(out of scope (preferred: Py 3.10))_ | — | — | — | — | — | — |
 | **pylingual** | (skipped — see preferred-version row) | _(out of scope (preferred: Py 3.13))_ | — | — | — | — | — | — |
 
@@ -1221,7 +1221,7 @@ Each cell shows the ``signature_match`` count for that (tool, Python version) pa
 
 | Tool | Version | Sig | Decl | Strict | BX | BN | BS | ED |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| **pychd (rules-only)** | main (this repo) | 23/23 | 22/23 | 1/23 | 0/23 | 0/23 | 4/23 | 0.317 |
+| **pychd (hybrid-rewrite:codex)** | main (this repo) | 23/23 | 23/23 | 17/23 | 6/23 | 15/23 | 13/23 | 0.743 |
 | **uncompyle6** | (skipped — see preferred-version row) | _(out of scope (preferred: Py 3.8))_ | — | — | — | — | — | — |
 | **decompyle3** | (skipped — see preferred-version row) | _(out of scope (preferred: Py 3.8))_ | — | — | — | — | — | — |
 | **pycdc** | b428976 (2026-04-06) | 4/23 | 4/23 | 1/23 | 0/23 | 1/23 | 1/23 | 0.252 |
@@ -1234,11 +1234,11 @@ Each cell shows the ``signature_match`` count for that (tool, Python version) pa
 
 | Tool | Version | Sig | Decl | Strict | BX | BN | BS | ED |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| **pychd (rules-only)** | main (this repo) | 13/23 | 13/23 | 0/23 | 0/23 | 0/23 | 1/23 | 0.233 |
+| **pychd (hybrid-rewrite:codex)** | main (this repo) | 20/23 | 20/23 | 17/23 | 5/23 | 11/23 | 14/23 | 0.723 |
 | **uncompyle6** | (skipped — see preferred-version row) | _(out of scope (preferred: Py 3.8))_ | — | — | — | — | — | — |
 | **decompyle3** | (skipped — see preferred-version row) | _(out of scope (preferred: Py 3.8))_ | — | — | — | — | — | — |
 | **pycdc** | (skipped — see preferred-version row) | _(out of scope (preferred: Py 3.10))_ | — | — | — | — | — | — |
-| **pylingual** | main (image: pychd-pylingual:latest) | 7/23 | 7/23 | 5/23 | 0/23 | 3/23 | 4/23 | 0.211 |
+| **pylingual** | main (image: pychd-pylingual:latest) | 8/23 | 8/23 | 5/23 | 0/23 | 3/23 | 5/23 | 0.311 |
 
 </details>
 
