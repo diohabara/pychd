@@ -14,27 +14,31 @@ opcodes alone.
 
 ## Headline — and why LLM-assisted decompilers look better than they are
 
-| | Rule-only (no LLM) | Hybrid-rewrite (rule pass + 1 Codex call/module) |
-|---|---:|---:|
-| `parses` | 100 % | 100 % |
-| `signature_match` (headline corpus, stdlib + popular PyPI, contamination likely) | 99.8 % | 100 % |
-| **`strict_match` (headline corpus, contamination likely)** | **36.0 %** | **93.2 %** |
-| **`Pass@1` on HumanEval (published evaluation set, contamination near-certain)** | 2.4 % | **97.6 %** |
-| **`strict_match` (`recent-pypi`, low-contamination proxy: 23 packages uploaded to PyPI in the last few months, each ≤ 5 % of the corpus)** | **45.6 %** | _not yet measured — costs Codex calls; run `just paper` to populate_ |
+Rule-only on 1,391 modules / 544K LoC across 7 corpora (deterministic, no LLM, fully reproducible offline):
+
+| Corpus | Modules | `signature_match` | `strict_match` | What it measures |
+|---|---:|---:|---:|---|
+| **`recent-pypi`** (23 packages uploaded to PyPI in the last few months, each ≤ 5 % of the corpus; **excludes `openai` / `openai-agents` — same vendor as the backend LLM**) | 182 | **98.4 %** | **45.6 %** | Low-contamination proxy. This is the number we'd ask a security-conscious reader to trust. |
+| Headline corpus (stdlib + popular PyPI + HumanEval) | 1,209 | 99.7 % | 43.7 % | Same rule pass, contamination likely — numbers are nearly identical to `recent-pypi`, confirming the rule pass works from bytecode signal, not memorisation |
+| **Aggregate** | **1,391** | **99.6 %** | **43.9 %** | |
+
+Hybrid-rewrite (rule pass + 1 Codex call/module) on the same corpus, from a prior run **on the contamination-likely subset**:
+
+| Metric | Rule-only | Hybrid-rewrite | What the gap means |
+|---|---:|---:|---|
+| `signature_match` (headline corpus) | 99.8 % | 100 % | +0.2 pt — LLM injects `from typing import IO, Self, ClassVar` into modules whose bytecode contains **literally zero trace** of those imports (worked example: `_colorize.py`). This is memorisation. |
+| **`strict_match` (headline corpus)** | **36.0 %** | **93.2 %** | **+57 pt** — the eye-catching headline number any LLM-augmented decompiler would advertise |
+| **`Pass@1` on HumanEval** | 2.4 % | **97.6 %** | **+95 pt** — HumanEval solutions are published and almost certainly in the backend model's training data |
 
 The hybrid-rewrite "93.2 % strict_match / 97.6 % Pass@1" numbers are exactly the kind of headline an LLM-augmented decompiler typically advertises. **They are mostly not measuring decompilation skill.**
 
-We have direct evidence (see [§LLM contamination disclosure](#llm-contamination-disclosure)) that on at least some headline-corpus modules the LLM is filling the rule-pass output with text that has *no representation in the bytecode whatsoever* — i.e. memorisation of CPython's source. The 97.6 % Pass@1 on HumanEval is essentially "did Codex remember the canonical HumanEval solution," not "did pychd decompile."
+We have direct evidence (see [§LLM contamination disclosure](#llm-contamination-disclosure) for the `_colorize.py` worked example) that on at least some headline-corpus modules the LLM is filling the rule-pass output with text that has *no representation in the bytecode whatsoever* — i.e. memorisation of CPython's source. The 97.6 % Pass@1 on HumanEval is essentially "did Codex remember the canonical HumanEval solution," not "did pychd decompile."
 
-The numbers a security-conscious reader should actually trust:
-
-- **Rule-only `strict_match` on `recent-pypi`: 45.6 % (83/182)**. No LLM in the loop, no memorisation channel. Curated for low contamination probability (release-date proxy + a 5 % per-package cap). This is a real, reproducible decompilation measurement.
-- Rule-only `signature_match` on `recent-pypi`: 98.4 % (179/182). Same story.
-- Rule-only `strict_match` on the headline (contaminated) corpus is **36.0 %**, *lower* than on `recent-pypi` — i.e. there's no evidence the rule pass benefits from contamination. The +57 pt jump from 36.0 % rule-only to 93.2 % hybrid-rewrite is **the LLM's contribution, and it's not honest decompilation**.
+The key observation: **the rule-only `strict_match` is 43.7 % on the contamination-likely corpus and 45.6 % on `recent-pypi`** — basically the same. The rule pass does not benefit from contamination. The huge +57 pt jump to hybrid-rewrite 93.2 % is therefore *all* the LLM, and the LLM is in large part returning source it has already seen.
 
 We think this gap — between what LLM-assisted decompilers advertise and what they actually deliver on unseen bytecode — is the central problem with the current wave of LLM-augmented reverse-engineering tools. **Be suspicious of LLM-assisted decompilers reporting >90 % strict-AST match on any code that could plausibly be in their backend model's training data.**
 
-The 2 headline-corpus modules that fail `signature_match` in rule-only (CPython's `_colorize.py` and `_pylong.py`) contain `if False:` / `if 0:` guards around imports and dead-code defs that the constant folder erases at compile time. **No decompiler — pychd or otherwise — can recover them from bytecode.** Hybrid-rewrite "fixes" them only by memorising the source, which is the worked example in [§LLM contamination disclosure](#llm-contamination-disclosure).
+The 5 modules that fail `signature_match` in rule-only (incl. CPython's `_colorize.py` and `_pylong.py`) contain `if False:` / `if 0:` guards around imports and dead-code defs that the constant folder erases at compile time. **No decompiler — pychd or otherwise — can recover them from bytecode.** Hybrid-rewrite "fixes" them only by memorising the source, which is the worked example in [§LLM contamination disclosure](#llm-contamination-disclosure).
 
 ![Per-tool comparison at each decompiler's preferred Python version](assets/comparison_decompilers.svg)
 
@@ -1081,28 +1085,27 @@ reviewers can read the trade-off directly.
 
 > _This section is generated by `tools/render_paper.py` and_ _committed alongside the code. Re-generate via `just paper`_ _whenever rules.py or any corpus changes._
 
-**Headline:** hybrid-rewrite recovery on **1228 modules / 514,349 LoC**
-(read with the [§LLM contamination disclosure](#llm-contamination-disclosure) in mind — including the `synthetic` corpus, which was LLM-assisted):
+**Headline:** rule-only recovery on **1391 modules / 543,863 LoC**:
 
-- **Strict AST match: 1144/1228 (93.2%)** — full stripped-AST equality (the regression telltale; bounded by CPython compiler normalisations).
-- **Pass@1 (functional correctness): 160/164 (97.6%)** on HumanEval — Decompile-Bench's re-executability oracle (`check(candidate)`).
-- **Behavioral smoke: 836/1228 (68.1%)** — recovered module imports under the producing interpreter and exposes the same public name + signature surface.
-- **Bytecode-normalized round-trip: 600/1228 (48.9%)** — recompiled output matches the original opcode stream after `CACHE`/`NOP`/specialised-opcode normalisation.
-- **Signature / declaration match: 100.0% / 99.8%** — present mainly so reviewers can sanity-check the rule pass; for fair comparison against body-recovering tools the relevant axis is `strict_match`.
-- **Edit similarity (mean): 0.753** — Ratcliff-Obershelp ratio averaged over the corpus.
+- **Signature match: 1386/1391 (99.6%)** — every public class, function, import, and class-method name in the original survives in the recovered tree.
+- **Declaration match: 1383/1391 (99.4%)** — signature match plus every module/class-level variable and annotated attribute by name.
+- **Strict match: 611/1391 (43.9%)** — full stripped-AST equality (cosmetic regression telltale; bounded by CPython compiler normalisations).
+- **Behavioral smoke: 551/1391 (39.6%)** — recovered module imports under the producing interpreter and exposes the same public name + signature surface as the original. The semantic axis that tolerates the most compiler normalisations; see [Why not naïve pyc → py → pyc?](#why-not-naïve-pyc--py--pyc) for what `BX`/`BN`/`BS` measure and what each one catches.
+- **Pass@1 (functional correctness): 4/164 (2.4%)** — Decompile-Bench's re-executability oracle, scored on corpora that ship a `check(candidate)` test (HumanEval is currently the only one). The recovered module is imported under the producing interpreter and its entry-point function is fed to the original test suite. A pure rules-only baseline necessarily scores near 0 here because bodies are stubbed; future LLM-assisted or simple-body matcher work shows up directly in this number.
+- **Edit similarity (mean): 0.448** — Decompile-Bench-style character-level Ratcliff-Obershelp ratio averaged over the corpus. 1.0 means byte-identical, 0.0 means entirely dissimilar. A continuous metric that surfaces incremental rule-pass improvements which haven't yet flipped any boolean axis.
 
 #### Per-corpus results
 
 | Corpus | Modules | LoC | Parses | Sig | Decl | Strict | BX | BN | BS | FC (Pass@1) | ED |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **stdlib**<br/>_Curated stdlib (10 modules)_ | 10 | 15,996 | 10/10 (100.0%) | 10/10 (100.0%) | 10/10 (100.0%) | 10/10 (100.0%) | 8/10 (80.0%) | 8/10 (80.0%) | 6/10 (60.0%) | n/a | 0.960 |
-| **stdlib-full**<br/>_Full Python 3.14 stdlib (single-file modules)_ | 153 | 130,182 | 153/153 (100.0%) | 153/153 (100.0%) | 153/153 (100.0%) | 144/153 (94.1%) | 52/153 (34.0%) | 83/153 (54.2%) | 131/153 (85.6%) | n/a | 0.814 |
-| **pypi**<br/>_PyPI: requests, click, attrs, flask, httpx, rich_ | 189 | 75,377 | 189/189 (100.0%) | 189/189 (100.0%) | 189/189 (100.0%) | 182/189 (96.3%) | 38/189 (20.1%) | 118/189 (62.4%) | 64/189 (33.9%) | n/a | 0.742 |
-| **pypi-top20**<br/>_PyPI top-20 pure-Python packages_ | 682 | 281,925 | 682/682 (100.0%) | 682/682 (100.0%) | 680/682 (99.7%) | 617/682 (90.5%) | 103/682 (15.1%) | 231/682 (33.9%) | 465/682 (68.2%) | n/a | 0.693 |
-| **humaneval**<br/>_OpenAI HumanEval (164 problems)_ | 164 | 3,361 | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 2/164 (1.2%) | 150/164 (91.5%) | 163/164 (99.4%) | 160/164 (97.6%) | 0.922 |
-| **cursor-sdk**<br/>_cursor-sdk 0.1.5 (top-level modules)_ | 19 | 6,883 | 19/19 (100.0%) | 19/19 (100.0%) | 19/19 (100.0%) | 16/19 (84.2%) | 0/19 (0.0%) | 6/19 (31.6%) | 1/19 (5.3%) | n/a | 0.887 |
-| **synthetic**<br/>_Contamination-resistant hand-written code (2026-05-26)_ | 11 | 625 | 11/11 (100.0%) | 11/11 (100.0%) | 11/11 (100.0%) | 11/11 (100.0%) | 1/11 (9.1%) | 4/11 (36.4%) | 6/11 (54.5%) | n/a | 0.881 |
-| **aggregate** | **1228** | **514,349** | **1228/1228 (100.0%)** | **1228/1228 (100.0%)** | **1226/1228 (99.8%)** | **1144/1228 (93.2%)** | **204/1228 (16.8%)** | **600/1228 (48.9%)** | **836/1228 (68.1%)** | **160/164 (97.6%)** | **0.753** |
+| **recent-pypi**<br/>_Recent / niche PyPI packages — 23 packages, capped at 8 modules each so no single project exceeds 5 % of the corpus. release-date proxy for low contamination (see §LLM contamination disclosure)_ | 182 | 60,390 | 182/182 (100.0%) | 179/182 (98.4%) | 179/182 (98.4%) | 83/182 (45.6%) | 19/182 (10.4%) | 44/182 (24.2%) | 26/182 (14.3%) | n/a | 0.430 |
+| **synthetic**<br/>_Synthetic modules drafted with LLM assistance (2026-05-26 — see §LLM contamination disclosure)_ | 11 | 634 | 11/11 (100.0%) | 11/11 (100.0%) | 11/11 (100.0%) | 5/11 (45.5%) | 1/11 (9.1%) | 1/11 (9.1%) | 1/11 (9.1%) | n/a | 0.398 |
+| **stdlib**<br/>_Curated stdlib (10 modules)_ | 10 | 15,996 | 10/10 (100.0%) | 10/10 (100.0%) | 10/10 (100.0%) | 2/10 (20.0%) | 0/10 (0.0%) | 0/10 (0.0%) | 3/10 (30.0%) | n/a | 0.194 |
+| **stdlib-full**<br/>_Full Python 3.14 stdlib (single-file modules)_ | 153 | 130,182 | 153/153 (100.0%) | 151/153 (98.7%) | 150/153 (98.0%) | 33/153 (21.6%) | 0/153 (0.0%) | 2/153 (1.3%) | 58/153 (37.9%) | n/a | 0.310 |
+| **pypi**<br/>_PyPI: requests, click, attrs, flask, httpx, rich_ | 189 | 74,879 | 189/189 (100.0%) | 189/189 (100.0%) | 189/189 (100.0%) | 73/189 (38.6%) | 2/189 (1.1%) | 37/189 (19.6%) | 39/189 (20.6%) | n/a | 0.336 |
+| **pypi-top20**<br/>_PyPI top-20 pure-Python packages_ | 682 | 258,421 | 682/682 (100.0%) | 682/682 (100.0%) | 680/682 (99.7%) | 251/682 (36.8%) | 11/682 (1.6%) | 58/682 (8.5%) | 320/682 (46.9%) | n/a | 0.463 |
+| **humaneval**<br/>_OpenAI HumanEval (164 problems)_ | 164 | 3,361 | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 164/164 (100.0%) | 0/164 (0.0%) | 0/164 (0.0%) | 104/164 (63.4%) | 4/164 (2.4%) | 0.677 |
+| **aggregate** | **1391** | **543,863** | **1391/1391 (100.0%)** | **1386/1391 (99.6%)** | **1383/1391 (99.4%)** | **611/1391 (43.9%)** | **33/1391 (2.4%)** | **142/1391 (10.2%)** | **551/1391 (39.6%)** | **4/164 (2.4%)** | **0.448** |
 
 #### Visualisation
 
@@ -1119,6 +1122,8 @@ Rule-pass coverage is documented as a table in [§Cross-version support](#cross-
 | Cause | Count | Fundamentally recoverable? |
 |---|---:|---|
 | if TYPE_CHECKING block | 2 | future work |
+| if-False-block (CPython constant-folds — unrecoverable) | 2 | ❌ no — constant-folded |
+| other / complex RHS | 1 | future work |
 
 <!-- END: paper-generated -->
 
@@ -1354,12 +1359,13 @@ HumanEval/MBPP. pychd's corpora are downloaded on demand into
 
 | Corpus | Where it comes from |
 |---|---|
+| `recent-pypi` | 23 recent / niche PyPI packages (`cursor-sdk` 0.1.5, `dspy` 3.2, `logfire` 4.33, …; full list and release-date pins in `assets/_recent_pypi_pins.json`). Each package capped at 8 deterministic modules so no single project exceeds ~5 % of the corpus. `openai` and `openai-agents` are deliberately excluded since the hybrid-rewrite backend is OpenAI Codex. |
+| `synthetic` | 11 hand-curated modules (LLM-assisted, see §LLM contamination disclosure). |
 | `stdlib` | 10 curated single-file stdlib modules. |
 | `stdlib-full` | Every single-file `.py` under the running Python's stdlib path. |
 | `pypi` | 6 popular pure-Python PyPI packages (`requests`, `click`, `attrs`, `flask`, `httpx`, `rich`). |
 | `pypi-top20` | 20 more pure-Python PyPI packages (`certifi`, `urllib3`, `packaging`, `PyYAML`, `jinja2`, `werkzeug`, `pygments`, …). |
 | `humaneval` | 164 reference solutions from OpenAI's HumanEval. |
-| `cursor-sdk` | 19 top-level modules of `cursor-sdk` 0.1.5. |
 
 ## Reproducibility
 
@@ -1390,9 +1396,11 @@ uv run ty check pychd tests                # 7. type check
   `tools/build_corpora.py` downloads the *latest* release of each
   package from PyPI. Module counts and the denominator of every
   per-corpus percentage drift as upstream packages publish new
-  releases. The `cursor-sdk` fixture is pinned to `0.1.5`; the
-  remaining 26 PyPI packages in the `pypi` + `pypi-top20` corpora
-  are not. Pinning every wheel is on the roadmap.
+  releases. The `recent-pypi` corpus is the exception: every package
+  there has its exact version and release date recorded in
+  `assets/_recent_pypi_pins.json` so the recency claim is auditable.
+  The remaining 26 PyPI packages in the `pypi` + `pypi-top20` corpora
+  are not yet pinned. Pinning every wheel is on the roadmap.
 * **`stdlib-full` reflects the running interpreter's stdlib.**
   Re-running on a different 3.14 patch release (3.14.0 vs 3.14.3)
   shifts which modules are included.

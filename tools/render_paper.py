@@ -60,6 +60,9 @@ from pychd.decompile import Backend, Mode  # noqa: E402
 from tools.benchmark import ModuleMetrics, measure_module  # noqa: E402
 
 CORPORA = [
+    # recent-pypi is the contamination-aware corpus and includes the
+    # cursor-sdk anchor package — keeping a separate cursor-sdk corpus
+    # would double-count and obscure the recent-pypi balance.
     (
         "recent-pypi",
         "Recent / niche PyPI packages — 23 packages, capped at 8 modules"
@@ -77,7 +80,6 @@ CORPORA = [
     ("pypi", "PyPI: requests, click, attrs, flask, httpx, rich"),
     ("pypi-top20", "PyPI top-20 pure-Python packages"),
     ("humaneval", "OpenAI HumanEval (164 problems)"),
-    ("cursor-sdk", "cursor-sdk 0.1.5 (top-level modules)"),
 ]
 
 
