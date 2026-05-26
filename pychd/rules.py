@@ -930,10 +930,19 @@ class _Context:
         return None
 
     def _try_pop_top(self) -> bool:
+        """Consume a ``POP_TOP``. If the popped value is a recoverable
+        call expression (``func(args)``), emit it as a module/class
+        expression statement so that side-effect calls at top level
+        survive into the recovered source (e.g.
+        ``test_appliance.run(test_yaml)`` at the end of test modules,
+        ``logging.basicConfig(...)``, ``register_command(...)``).
+        """
         if self.ins[self.pos].opname != "POP_TOP":
             return False
         if self.stack:
-            self.stack.pop()
+            popped = self.stack.pop()
+            if isinstance(popped, _CallExpr):
+                self.body.append(ir.RawStatement(source=popped.text))
         self._consume(1)
         self.pos += 1
         return True
