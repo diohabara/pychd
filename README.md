@@ -58,7 +58,7 @@ Hybrid-rewrite reaching **86.0 % strict-AST match on `fuzz-synthetic`** — byte
 | Mode | `parses` | `signature_match` | `declaration_match` | **`strict_match`** | `BS` |
 |---|---:|---:|---:|---:|---:|
 | Rule-only (no LLM, deterministic) | 100 % | 99.7 % | 99.7 % | **43.1 %** | 19.3 % |
-| Hybrid-rewrite (rule pass + 1 Codex call/module) | 100 % | 99.7 % | 99.7 % | **86.5 %** | 49.4 % |
+| Hybrid-rewrite (rule pass + 1 Codex call/module) | 100 % | 99.7 % | 99.7 % | **86.5 %** | 43.2 % |
 
 Pass@1 on HumanEval: **rule-only 2.4 %** → **hybrid-rewrite 97.6 %**, but every HumanEval prompt is in the backend model's training data, so this is mostly an LLM-solves-HumanEval-from-memory signal rather than a decompilation signal.
 
@@ -80,8 +80,9 @@ pychd decompile path/to/module.pyc --rules-only
 # Optional: the contamination-free benchmarking harness used by this
 # repo. Install both to drop the same fuzz → obfuscate → decompile
 # pipeline into your own decompiler's CI.
-pip install pychd-pyfuzz pychd-pyobf
-pychd-pyfuzz emit --target 3.14 --seed 0    # one random valid Python module
+uv tool install pychd-pyfuzz pychd-pyobf     # uv users
+pip install pychd-pyfuzz pychd-pyobf         # pip users
+pychd-pyfuzz emit --target 3.14 --seed 0     # one random valid Python module
 pychd-pyobf rewrite IN.pyc OUT.pyc           # anonymise a .pyc in place
 ```
 
@@ -182,45 +183,22 @@ mechanism behind the 0.2 pt sig-match gain, and the same kind of
 mechanism is plausibly contributing to the much larger strict-
 match / BN / Pass@1 gains.
 
-### What we now measure — `fuzz-synthetic` and `*-obf`
+### Adopting the same harness in your own decompiler
 
-The contamination disclosure used to end with "a truly
-contamination-free evaluation would need a privately authored,
-never-published corpus that no LLM has touched at any stage of
-training. This repository does not ship one." That gap is now
-closed by two PyPI packages built alongside pychd:
+`pychd-pyfuzz` and `pychd-pyobf` are independent PyPI distributions
+(see [§Headline](#headline--measured-contamination-differential-fuzz-synthetic-as-the-trust-anchor)
+for what they do). `pip install pychd-pyfuzz pychd-pyobf` and you
+can run the same fuzz → obfuscate → decompile audit against any
+Python decompiler. Expected shape of an honest result:
 
-* [**`pychd-pyfuzz`**](pychd_pyfuzz/) generates random,
-  syntactically-valid Python by direct AST construction. Every
-  sample is fresh on every run, has random identifiers, and has
-  never been published — so by construction no LLM has memorised
-  it. We build a 200-module `fuzz-synthetic` corpus on every
-  `just paper` run.
-* [**`pychd-pyobf`**](pychd_pyobf/) anonymises a CPython `.pyc`
-  (rename identifiers, strip strings / docstrings / line tables /
-  filenames) while preserving the opcode stream byte-for-byte. We
-  use this to build a `<corpus>-obf` mirror of each existing
-  corpus; pychd is then re-evaluated against the anonymised
-  reference. The delta between raw and `-obf` scores on the same
-  pipeline is, mechanically, the contamination signal — same
-  bytecode, just with the surface tokens an LLM could have
-  memorised stripped out.
-
-Both packages are independent PyPI distributions (`pip install
-pychd-pyfuzz pychd-pyobf`) so any Python decompiler author can run
-the same trust-tier audit against their own tool. The expected
-shape of a non-contaminated result is approximately:
-
-* Rule-only `strict_match` ≈ within a few points of the raw-corpus
-  number. The rule pass is bytecode-driven and identifier-agnostic,
-  so anonymisation should not move it materially.
-* Hybrid-rewrite `strict_match` should drop on `-obf` corpora by an
-  amount equal to the LLM's contamination advantage on that corpus.
-  Anything large (e.g. > 30 pt) is strong evidence the upstream
-  hybrid score is contamination-driven.
-
-The measured numbers for this repo's hybrid-rewrite path are in the
-"contamination differential" table at the top of the README.
+* Rule-only `strict_match` should be within a few points of the
+  raw-corpus number — the rule pass is bytecode-driven and
+  identifier-agnostic, so anonymisation should not move it.
+* Hybrid-rewrite `strict_match` will drop on `-obf` corpora by an
+  amount equal to the LLM's contamination advantage on that
+  corpus. > 30 pt is strong evidence the upstream hybrid score is
+  contamination-driven; this repo's worst case is 13 pt (stdlib),
+  with most contaminated corpora landing under 10 pt.
 
 ## Pipeline at a glance
 
@@ -240,10 +218,9 @@ pychd routes every `.pyc` through two passes:
   loop bodies the rule pass collapsed). Bytes go in, source comes
   out — the LLM never sees the original source.
 
-| Mode | strict | BX | BN | BS | FC (HumanEval) | ED |
-|---|---:|---:|---:|---:|---:|---:|
-| **Hybrid-rewrite** (one Codex call per module — **default**) | **93.2%** (1144/1228) | 16.8% | 48.9% | 68.1% | **97.6%** (160/164) | 0.753 |
-| Rules-only (deterministic, no LLM, offline, free) | 36.0% (438/1217) | 0.9% | 7.2% | 42.1% | 2.4% (4/164) | 0.445 |
+(Aggregate numbers across all 2,794 modules are in the
+[headline table](#aggregate-over-all-2794-modules) at the top of
+the README. Per-axis ceilings are below.)
 
 ```mermaid
 flowchart LR
@@ -270,16 +247,18 @@ pychd chooses the oracle, so the rule pass deliberately leaves an
 
 ### Rule-only vs hybrid-rewrite ceiling
 
-| Axis | Rule-only achieved | Hybrid-rewrite achieved | What the rule pass cannot reach without an oracle |
-|---|---|---|---|
-| `parses` | 100% | 100% | — |
-| `signature_match` | 99.8% | 100% | 0.2 % rule-only residual: 2 CPython stdlib modules (`_colorize.py`, `_pylong.py`) whose source contains `if False:` / `if 0:` guards around `from typing import IO, Self, ClassVar` and a debug-only `def consumer(...)`. The constant folder genuinely erases those blocks from the bytecode (the README shows the `dis.dis` proof below), so there is *nothing* in the .pyc for any decompiler to recover. The 0.2 % → 0 % "improvement" from hybrid-rewrite is therefore **not decompilation** — the LLM is filling the gap from memorisation of CPython's source, which it has overwhelmingly seen at training time. See [§LLM contamination disclosure](#llm-contamination-disclosure); this is the concrete failure mode that section warns about. |
-| `declaration_match` | 99.6% | 99.8% | Same two modules; hybrid-rewrite recovers one declaration set by memorisation, leaves the other. |
-| `strict_match` | 36.0% | **93.2%** | CPython normalises docstrings via `inspect.cleandoc`, folds constants, and re-emits expressions in canonical form. The rewrite re-derives the canonical form from disassembly. |
-| `BS` (behavioral_smoke) | 42.1% | **68.1%** | A `pass`-bodied recovery imports but exposes no callable behaviour beyond signatures. |
-| `BX` (bytecode_exact) | 0.9% | 16.8% | Identical Python source compiles to different `co_consts` ordering across runs. |
-| `BN` (bytecode_normalized) | 7.2% | **48.9%** | Tolerates lnotab + specialised-opcode noise but body recovery still required. |
-| `FC` (Pass@1) | 2.4% | **97.6%** on HumanEval | The recovered module must *behave* like the original. |
+What each axis can / cannot recover from bytecode alone, aggregated
+over all 2,794 modules:
+
+| Axis | Rule-only | Hybrid-rewrite | What the rule pass cannot reach without an oracle |
+|---|---:|---:|---|
+| `parses` | 100 % | 100 % | — |
+| `signature_match` | 99.7 % | 99.7 % | Residual is `if False:` / `if 0:` guards (`_colorize.py`, `_pylong.py`) whose contents the constant folder erases — *no* decompiler can recover them. Hybrid does not move the needle here. See [§LLM contamination disclosure](#llm-contamination-disclosure). |
+| `declaration_match` | 99.7 % | 99.7 % | Same. |
+| **`strict_match`** | **43.1 %** | **86.5 %** | CPython normalises docstrings via `inspect.cleandoc`, folds constants, and re-emits expressions in canonical form. The rewrite re-derives the canonical form from disassembly. |
+| `BS` (behavioral_smoke) | 19.3 % | 43.2 % | A `pass`-bodied recovery imports but exposes no callable behaviour beyond signatures. Anonymised corpora drop hard here (see contamination differential). |
+| `BN` (bytecode_normalized) | — | 48.6 % | Tolerates lnotab + specialised-opcode noise but body recovery still required. |
+| `FC` (Pass@1, HumanEval only) | 2.4 % | **97.6 %** | The recovered module must *behave* like the original. HumanEval is published; the Pass@1 lift is largely memorisation rather than decompilation. |
 
 ## More CLI examples
 
@@ -1429,6 +1408,7 @@ HumanEval/MBPP. pychd's corpora are downloaded on demand into
 
 | Corpus | Where it comes from |
 |---|---|
+| `fuzz-synthetic` | 200 random valid-Python modules generated on every run via `pychd-pyfuzz`. Guaranteed LLM-naïve by construction (see §LLM contamination disclosure). |
 | `recent-pypi` | 23 recent / niche PyPI packages (`cursor-sdk` 0.1.5, `dspy` 3.2, `logfire` 4.33, …; full list and release-date pins in `assets/_recent_pypi_pins.json`). Each package capped at 8 deterministic modules so no single project exceeds ~5 % of the corpus. `openai` and `openai-agents` are deliberately excluded since the hybrid-rewrite backend is OpenAI Codex. |
 | `synthetic` | 11 hand-curated modules (LLM-assisted, see §LLM contamination disclosure). |
 | `stdlib` | 10 curated single-file stdlib modules. |
@@ -1436,6 +1416,7 @@ HumanEval/MBPP. pychd's corpora are downloaded on demand into
 | `pypi` | 6 popular pure-Python PyPI packages (`requests`, `click`, `attrs`, `flask`, `httpx`, `rich`). |
 | `pypi-top20` | 20 more pure-Python PyPI packages (`certifi`, `urllib3`, `packaging`, `PyYAML`, `jinja2`, `werkzeug`, `pygments`, …). |
 | `humaneval` | 164 reference solutions from OpenAI's HumanEval. |
+| `*-obf` (5 mirrors) | `stdlib-obf` / `stdlib-full-obf` / `pypi-obf` / `pypi-top20-obf` / `humaneval-obf`: the matching raw corpus rewritten through `pychd-pyobf` so identifiers / strings / docstrings are stripped while the opcode stream is preserved. The raw-vs-obf delta on the same pipeline isolates the contamination contribution. |
 
 ## Reproducibility
 
