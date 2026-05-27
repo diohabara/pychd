@@ -1,18 +1,28 @@
 """pychd_pyobf — anonymise identifiers / constants / metadata in a .pyc.
 
-Public API (filled in by Phase C):
+Public API:
 
-* ``obfuscate(in_path, out_path)``   — main entry point
-* ``ObfuscationReport``              — dataclass holding mapping + stats
-* ``rewrite_native``                 — 3.14 native rewriter
-* ``rewrite_subprocess``             — 3.0–3.13 cross-version rewriter
+* :func:`obfuscate` — main entry point: ``obfuscate(in_path, out_path)``
+  rewrites a .pyc in place and returns an :class:`ObfuscationReport`.
+* :class:`ObfuscationReport` — the report dataclass (paths, writer
+  version, identifier mapping, native vs subprocess flag).
+* :class:`ObfuscationMapping` — the original→anonymised name table
+  the report carries.
 
-The CLI entry point is ``pychd_pyobf.cli:main`` (registered as the
+The CLI entry point is :func:`pychd_pyobf.cli.main` (registered as the
 ``pychd-pyobf`` console script).
 """
 
 from __future__ import annotations
 
+from .dispatch import ObfuscationReport, obfuscate
+from .rewrite_native import ObfuscationMapping
+
 __version__ = "0.1.0"
 
-__all__ = ["__version__"]
+__all__ = [
+    "ObfuscationMapping",
+    "ObfuscationReport",
+    "__version__",
+    "obfuscate",
+]
