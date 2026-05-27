@@ -71,10 +71,18 @@ The take-away for anyone reading benchmark numbers for an LLM-assisted decompile
 ## Quick start
 
 ```bash
+# The decompiler itself.
 uv tool install pychd
 pychd decompile path/to/module.pyc --hybrid-rewrite --backend codex
 # rules-only (deterministic, no LLM, offline, free — best for declaration recovery):
 pychd decompile path/to/module.pyc --rules-only
+
+# Optional: the contamination-free benchmarking harness used by this
+# repo. Install both to drop the same fuzz → obfuscate → decompile
+# pipeline into your own decompiler's CI.
+pip install pychd-pyfuzz pychd-pyobf
+pychd-pyfuzz emit --target 3.14 --seed 0    # one random valid Python module
+pychd-pyobf rewrite IN.pyc OUT.pyc           # anonymise a .pyc in place
 ```
 
 `--hybrid-rewrite` is the default at the CLI. It uses your existing
