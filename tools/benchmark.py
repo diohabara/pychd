@@ -962,11 +962,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--parallel",
         type=int,
-        default=1,
+        default=None,
         help=(
             "Process this many modules in parallel. Only useful with LLM"
             " modes — the rule pass alone is fast enough that the"
-            " thread-pool overhead dominates."
+            " thread-pool overhead dominates. Defaults to"
+            " ``os.cpu_count()`` (auto-detect); pass ``--parallel 1`` to"
+            " force serial execution."
         ),
     )
     args = parser.parse_args(argv)
@@ -979,6 +981,12 @@ def main(argv: list[str] | None = None) -> int:
     if not files:
         print(f"no .py files under {args.path}", file=sys.stderr)
         return 2
+
+    import os as _os
+
+    args.parallel = (
+        args.parallel if args.parallel is not None else (_os.cpu_count() or 1)
+    )
 
     mode = Mode(args.mode)
     backend = Backend(args.backend)

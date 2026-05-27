@@ -166,7 +166,7 @@ cython_debug/
 .claude/
 
 # Codex review scratch (transient, do not commit)
-.codex/
+.codex
 
 # Local PNG previews (SVGs are the committed source of truth)
 assets/*.png

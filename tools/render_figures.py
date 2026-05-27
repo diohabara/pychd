@@ -156,10 +156,22 @@ def _write(
     return svg_path
 
 
+def _mode_label(mode: str | None) -> str:
+    """Render the chart-title suffix that names which pipeline mode
+    produced the underlying numbers.
+    """
+    if mode == "hybrid-rewrite":
+        return "hybrid-rewrite (rule pass + 1 Codex call per module)"
+    if mode == "rules-only":
+        return "rule-only (no LLM, deterministic)"
+    return "(mode unrecorded)"
+
+
 def render_per_corpus_recovery(
     results: dict[str, dict[str, Any]],
     *,
     png: bool = False,
+    mode: str | None = None,
 ) -> Path:
     """Grouped bar chart: signature / declaration / strict match per corpus."""
     corpora = list(results.keys())
@@ -199,7 +211,7 @@ def render_per_corpus_recovery(
         hovertemplate="%{y:.1f}%<extra>strict match</extra>",
     )
     fig.update_layout(
-        title="Rule-only recovery rate by corpus (no LLM)",
+        title=f"Recovery rate by corpus — {_mode_label(mode)}",
         template=PLOTLY_TEMPLATE,
         barmode="group",
         yaxis=dict(title="Recovery rate (%)", range=[0, 105]),
@@ -214,6 +226,7 @@ def render_semantic_by_corpus(
     results: dict[str, dict[str, Any]],
     *,
     png: bool = False,
+    mode: str | None = None,
 ) -> Path:
     """Bar chart: bytecode_exact / bytecode_normalized / behavioral_smoke per corpus.
 
@@ -260,7 +273,7 @@ def render_semantic_by_corpus(
         hovertemplate="%{y:.1f}%<extra>import + public surface</extra>",
     )
     fig.update_layout(
-        title="Semantic equivalence rate by corpus (rule-only, no LLM)",
+        title=f"Semantic equivalence by corpus — {_mode_label(mode)}",
         template=PLOTLY_TEMPLATE,
         barmode="group",
         yaxis=dict(title="Rate (%)", range=[0, 105]),
@@ -275,6 +288,7 @@ def render_paper_axes_by_corpus(
     results: dict[str, dict[str, Any]],
     *,
     png: bool = False,
+    mode: str | None = None,
 ) -> Path:
     """Paper-aligned axes: Pass@1 + mean Edit Similarity per corpus.
 
@@ -323,7 +337,7 @@ def render_paper_axes_by_corpus(
     fig.update_layout(
         title=(
             "Paper-aligned axes by corpus — Pass@1 (Decompile-Bench)"
-            " and Edit Similarity"
+            f" and Edit Similarity — {_mode_label(mode)}"
         ),
         template=PLOTLY_TEMPLATE,
         barmode="group",
@@ -504,9 +518,16 @@ def main(argv: list[str] | None = None) -> int:
         written.append(vc)
     if args.results_json.exists():
         raw = json.loads(args.results_json.read_text())
-        written.append(render_per_corpus_recovery(raw["corpora"], png=args.png))
-        written.append(render_semantic_by_corpus(raw["corpora"], png=args.png))
-        written.append(render_paper_axes_by_corpus(raw["corpora"], png=args.png))
+        mode = raw.get("mode")
+        written.append(
+            render_per_corpus_recovery(raw["corpora"], png=args.png, mode=mode)
+        )
+        written.append(
+            render_semantic_by_corpus(raw["corpora"], png=args.png, mode=mode)
+        )
+        written.append(
+            render_paper_axes_by_corpus(raw["corpora"], png=args.png, mode=mode)
+        )
     if args.comparison_json.exists():
         cmp = json.loads(args.comparison_json.read_text())
         # The comparison figure now consumes the whole versioned dict

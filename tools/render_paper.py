@@ -417,6 +417,7 @@ def render(
         }
 
     raw: dict[str, Any] = {
+        "mode": mode.value,
         "totals": {
             "modules": grand_n,
             "loc": grand_loc,
@@ -664,8 +665,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--parallel",
         type=int,
-        default=1,
-        help="Process this many modules in parallel during the headline render.",
+        default=None,
+        help=(
+            "Process this many modules in parallel during the headline"
+            " render. Defaults to ``os.cpu_count()`` (auto-detect)."
+            " Pass ``--parallel 1`` to force serial execution."
+        ),
     )
     ap.add_argument(
         "--cache-dir",
@@ -682,13 +687,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    import os
+
+    parallel = args.parallel if args.parallel is not None else (os.cpu_count() or 1)
+    print(
+        f"render: --parallel={parallel} (auto-detected)"
+        if args.parallel is None
+        else f"render: --parallel={parallel}",
+        flush=True,
+    )
+
     _ensure_corpora(args.corpora_root)
     block, raw = render(
         args.corpora_root,
         mode=Mode(args.mode),
         backend=Backend(args.backend),
         model=args.model,
-        parallel=args.parallel,
+        parallel=parallel,
         cache_dir=args.cache_dir,
     )
 
