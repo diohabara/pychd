@@ -13,9 +13,11 @@
 default:
     @just --list
 
-# Sync the project venv (creates .venv if missing).
+# Sync the project venv (creates .venv if missing). `--all-packages`
+# installs every uv workspace member (pychd, pychd-pyfuzz, pychd-pyobf)
+# so the evaluator and tools/ scripts can import them directly.
 setup:
-    uv sync
+    uv sync --all-packages
 
 # Install prek + register pre-commit and pre-push hooks.
 hooks-install:
@@ -26,16 +28,18 @@ hooks-run:
     uvx prek run --all-files --hook-stage pre-commit
     uvx prek run --all-files --hook-stage pre-push
 
-# Lint (ruff check + ruff format check + ty type-check).
+# Lint (ruff check + ruff format check + ty type-check) across the
+# workspace: pychd, the two PyPI-publishable members (pychd-pyfuzz,
+# pychd-pyobf), and tools/ + tests/.
 lint:
-    uv run ruff check pychd tests
-    uv run ruff format --check pychd tests
-    uv run ty check pychd tests
+    uv run ruff check pychd pychd_pyfuzz pychd_pyobf tools tests
+    uv run ruff format --check pychd pychd_pyfuzz pychd_pyobf tools tests
+    uv run ty check pychd pychd_pyfuzz pychd_pyobf tests
 
 # Auto-fix lint and formatting.
 fix:
-    uv run ruff check --fix pychd tests
-    uv run ruff format pychd tests
+    uv run ruff check --fix pychd pychd_pyfuzz pychd_pyobf tools tests
+    uv run ruff format pychd pychd_pyfuzz pychd_pyobf tools tests
 
 # Run pytest.
 test:
@@ -125,7 +129,25 @@ paper: setup bench-setup
     @echo "✅ paper regenerated. README §5.3 + assets/*.svg up to date."
     @echo "   Inspect changes with: git diff README.md assets/"
 
-# Tag a release and push (triggers the publish workflow).
-release version:
-    git tag -a "v{{ version }}" -m "v{{ version }}"
-    git push origin "v{{ version }}"
+# Build wheels for every workspace member. Per-member output goes to
+# the root `dist/` directory.
+build-all:
+    uv build --package pychd
+    uv build --package pychd-pyfuzz
+    uv build --package pychd-pyobf
+
+# Tag a pychd release and push (triggers .github/workflows/publish-pychd.yaml).
+# Tag schema: `pychd-vX.Y.Z`. Use this when the bump is in pychd/.
+release-pychd version:
+    git tag -a "pychd-v{{ version }}" -m "pychd v{{ version }}"
+    git push origin "pychd-v{{ version }}"
+
+# Tag a pychd-pyfuzz release and push (triggers publish-pyfuzz.yaml).
+release-pyfuzz version:
+    git tag -a "pyfuzz-v{{ version }}" -m "pychd-pyfuzz v{{ version }}"
+    git push origin "pyfuzz-v{{ version }}"
+
+# Tag a pychd-pyobf release and push (triggers publish-pyobf.yaml).
+release-pyobf version:
+    git tag -a "pyobf-v{{ version }}" -m "pychd-pyobf v{{ version }}"
+    git push origin "pyobf-v{{ version }}"

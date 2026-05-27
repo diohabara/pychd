@@ -47,7 +47,7 @@ select = ["E", "F", "I", "W"]
 python-version = "3.14"
 
 [tool.ty.src]
-include = ["pychd", "tests"]
+include = ["pychd", "pychd_pyfuzz", "pychd_pyobf", "tests"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -57,3 +57,22 @@ packages = ["pychd"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# pytest's default `python_files` already includes both `test_*.py` and
+# `*_test.py`. We standardise on the suffix form for this repo.
+python_files = ["*_test.py", "test_*.py"]
+
+[tool.uv.workspace]
+# Two additional PyPI-publishable workspace members. See README §Releasing
+# for the per-package tag scheme and Trusted Publishing setup.
+members = ["pychd_pyfuzz", "pychd_pyobf"]
+
+[tool.uv.sources]
+# Make the workspace members resolvable to their editable in-tree
+# checkouts, so `tools/eval_fuzz.py` can `import pychd_pyfuzz` /
+# `import pychd_pyobf` without any extra install step. The root
+# package `pychd` is also declared here because pychd-pyobf depends
+# on it — without this, uv tries to resolve `pychd` from PyPI when
+# building the workspace member.
+pychd = { workspace = true }
+pychd-pyfuzz = { workspace = true }
+pychd-pyobf = { workspace = true }

@@ -1,0 +1,26 @@
+[project]
+name = "pychd-pyobf"
+version = "0.1.0"
+description = "Anonymise identifiers / constants / metadata inside a CPython .pyc while preserving the opcode stream — for contamination-free decompiler benchmarking"
+readme = "README.md"
+authors = [
+    { name = "卍diohabara卍", email = "diohabara@users.noreply.github.com" }
+]
+dependencies = [
+    # We reuse ``pychd.versions.detect_version`` to identify the .pyc
+    # magic number. xdis is a transitive dependency through pychd but we
+    # do not import it directly — the cross-version rewrite delegates to
+    # a subprocess running the target Python.
+    "pychd>=1.2.0",
+]
+requires-python = ">= 3.14"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+pychd-pyobf = "pychd_pyobf.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pychd_pyobf"]

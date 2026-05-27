@@ -1446,9 +1446,56 @@ uv run python tools/build_multiversion_fixtures.py
 # compiles a sample with every locally-installed Python 3.x and emits
 # /tmp/pychd-multiversion/sample-3.X.pyc.
 
-uv run pytest tests/test_versions.py -v
+uv run pytest tests/versions_test.py -v
 # 20 tests, including integration tests over every fixture.
 ```
+
+## Releasing
+
+This repository is a **uv workspace** with three PyPI-publishable
+members; each has its own GitHub Actions workflow and its own tag
+prefix so a release of one does not drag the others along.
+
+| Package | PyPI name | Tag prefix | Workflow |
+|---|---|---|---|
+| Decompiler | `pychd` | `pychd-v*` | `.github/workflows/publish-pychd.yaml` |
+| Syntactic Fuzzer | `pychd-pyfuzz` | `pyfuzz-v*` | `.github/workflows/publish-pyfuzz.yaml` |
+| Obfuscator | `pychd-pyobf` | `pyobf-v*` | `.github/workflows/publish-pyobf.yaml` |
+
+Cut a release with the matching `just` recipe (which `git tag` +
+`git push origin` together):
+
+```bash
+just release-pychd 1.3.0     # tags pychd-v1.3.0
+just release-pyfuzz 0.1.0    # tags pyfuzz-v0.1.0
+just release-pyobf 0.1.0     # tags pyobf-v0.1.0
+```
+
+### Trusted Publishing setup (one-time per package)
+
+All three workflows publish via PyPI's OIDC Trusted Publishing
+(no API tokens in repository secrets). Each PyPI project must be
+registered with this repository + workflow before its first tag push:
+
+1. On PyPI, create the project (or reserve the name) and open
+   **Manage → Publishing → Add a new pending publisher**.
+2. Fill in:
+   - Owner: `diohabara`
+   - Repository name: `pychd`
+   - Workflow filename: `publish-pychd.yaml` (or `publish-pyfuzz.yaml`
+     / `publish-pyobf.yaml`)
+   - Environment name: `pypi`
+3. Repeat on **TestPyPI** with the same fields, using environment
+   name `testpypi`. The main-branch dry-run job in every workflow
+   pushes the wheel to TestPyPI with `skip-existing: true` so
+   repeated CI runs do not bounce.
+4. In this GitHub repository, create the two environments under
+   **Settings → Environments**: `pypi` and `testpypi`. Add review
+   requirements / branch protection rules as needed.
+
+After that, tag pushes (`pychd-v*` / `pyfuzz-v*` / `pyobf-v*`)
+release to real PyPI; main-branch pushes publish a fresh build to
+TestPyPI for sanity-checking.
 
 ## Scope
 

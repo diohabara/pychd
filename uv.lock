@@ -2,6 +2,13 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
+[manifest]
+members = [
+    "pychd",
+    "pychd-pyfuzz",
+    "pychd-pyobf",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
@@ -746,6 +753,22 @@ dev = [
     { name = "ty", specifier = ">=0.0.39" },
     { name = "uncompyle6", specifier = ">=3.9.0" },
 ]
+
+[[package]]
+name = "pychd-pyfuzz"
+version = "0.1.0"
+source = { editable = "pychd_pyfuzz" }
+
+[[package]]
+name = "pychd-pyobf"
+version = "0.1.0"
+source = { editable = "pychd_pyobf" }
+dependencies = [
+    { name = "pychd" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pychd", editable = "." }]
 
 [[package]]
 name = "pydantic"

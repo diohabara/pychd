@@ -1,0 +1,21 @@
+[project]
+name = "pychd-pyfuzz"
+version = "0.1.0"
+description = "Random syntactically-valid Python source generator — produces never-published code for contamination-free decompiler benchmarking"
+readme = "README.md"
+authors = [
+    { name = "卍diohabara卍", email = "diohabara@users.noreply.github.com" }
+]
+# Stdlib-only; no runtime dependencies.
+dependencies = []
+requires-python = ">= 3.14"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+pychd-pyfuzz = "pychd_pyfuzz.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pychd_pyfuzz"]
