@@ -4,14 +4,9 @@ name: Publish pychd to PyPI
 # itself). Tag schema: `pychd-vX.Y.Z`. The two sibling workflows
 # (publish-pyfuzz.yaml, publish-pyobf.yaml) release their packages
 # independently under `pyfuzz-v*` / `pyobf-v*` tags.
-#
-# Pushes to `main` trigger a dry-run release to TestPyPI; pushes of a
-# `pychd-v*` tag release to real PyPI.
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "pychd-v*"
   workflow_dispatch:
@@ -45,34 +40,8 @@ jobs:
           name: dist-pychd
           path: dist/
 
-  publish-testpypi:
-    name: dry-run → TestPyPI
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build
-    runs-on: ubuntu-latest
-    # ``continue-on-error: true`` keeps the workflow green for normal
-    # development pushes when the TestPyPI side does not yet have a
-    # Trusted Publisher registered for this workflow file. Once the
-    # `testpypi` environment is wired up on TestPyPI (README §Releasing),
-    # this dry-run will start exchanging tokens cleanly and you can
-    # drop the flag if you want strict failure semantics on dry-runs.
-    continue-on-error: true
-    permissions:
-      id-token: write
-    environment: testpypi
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist-pychd
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
-
   publish-pypi:
     name: publish → PyPI
-    if: startsWith(github.ref, 'refs/tags/pychd-v')
     needs: build
     runs-on: ubuntu-latest
     permissions:

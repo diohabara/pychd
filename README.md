@@ -1541,17 +1541,12 @@ registered with this repository + workflow before its first tag push:
    - Workflow filename: `publish-pychd.yaml` (or `publish-pyfuzz.yaml`
      / `publish-pyobf.yaml`)
    - Environment name: `pypi`
-3. Repeat on **TestPyPI** with the same fields, using environment
-   name `testpypi`. The main-branch dry-run job in every workflow
-   pushes the wheel to TestPyPI with `skip-existing: true` so
-   repeated CI runs do not bounce.
-4. In this GitHub repository, create the two environments under
-   **Settings → Environments**: `pypi` and `testpypi`. Add review
-   requirements / branch protection rules as needed.
+3. In this GitHub repository, create the `pypi` environment under
+   **Settings → Environments**. Add review requirements / branch
+   protection rules as needed.
 
 After that, tag pushes (`pychd-v*` / `pyfuzz-v*` / `pyobf-v*`)
-release to real PyPI; main-branch pushes publish a fresh build to
-TestPyPI for sanity-checking.
+release directly to PyPI.
 
 ## Scope
 
