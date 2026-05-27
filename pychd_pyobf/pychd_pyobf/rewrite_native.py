@@ -74,13 +74,20 @@ def _anonymise_tuple(
     mapping: dict[str, str],
 ) -> tuple[str, ...]:
     """Rewrite *original* (a tuple of strings) into ``_<prefix>N`` form,
-    growing *mapping* with the rename pairs."""
+    growing *mapping* with the rename pairs.
+
+    The suffix counter is the *global* size of ``mapping`` rather than
+    the per-tuple index — otherwise two different code objects whose
+    parameter lists each start at index 0 would both map their first
+    fresh name to ``_<prefix>0``, producing duplicate-argument bugs
+    when ``apply_mapping_to_source`` writes them out.
+    """
     out: list[str] = []
-    for i, name in enumerate(original):
+    for name in original:
         if name in mapping:
             out.append(mapping[name])
             continue
-        new_name = f"_{prefix}{i}"
+        new_name = f"_{prefix}{len(mapping)}"
         mapping[name] = new_name
         out.append(new_name)
     return tuple(out)

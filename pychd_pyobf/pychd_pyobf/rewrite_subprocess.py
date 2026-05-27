@@ -72,12 +72,16 @@ mapping = {
 
 
 def _anon_tuple(seq, prefix, table):
+    # Use the global size of *table* as the suffix counter so two
+    # distinct code objects with the same per-tuple index 0 do not
+    # both claim "_<prefix>0" — that produces duplicate-arg bugs in
+    # the anonymised source.
     out = []
-    for i, name in enumerate(seq):
+    for name in seq:
         if name in table:
             out.append(table[name])
             continue
-        new = "_" + prefix + str(i)
+        new = "_" + prefix + str(len(table))
         table[name] = new
         out.append(new)
     return tuple(out)
