@@ -711,6 +711,120 @@ def build_cursor_sdk(dst: Path, *, force: bool) -> int:
 
 
 # ---------------------------------------------------------------------------
+# fuzz-synthetic + *-obf corpora (contamination-free evaluation, Phase D)
+# ---------------------------------------------------------------------------
+
+
+# Knobs for the fuzz-synthetic corpus. Kept small enough that building
+# the corpus from scratch takes seconds, not minutes; the evaluator
+# can call into the fuzzer directly for bigger sweeps.
+FUZZ_SYNTHETIC_COUNT = 200
+FUZZ_SYNTHETIC_SEED = 0
+
+
+def build_fuzz_synthetic(dst: Path, *, force: bool) -> int:
+    """Generate ``FUZZ_SYNTHETIC_COUNT`` random valid Python modules
+    via ``pychd-pyfuzz`` and drop them into *dst*.
+
+    No source-level obfuscation is applied here — the corpus is
+    contamination-resistant by construction (pyfuzz output is fresh
+    on every regeneration; identifiers are scrambled at generation
+    time; no LLM has ever seen any specific sample). The ``*-obf``
+    corpora handle the differential experiment that obfuscates
+    existing source.
+    """
+    if dst.exists() and not force and any(dst.glob("*.py")):
+        return sum(1 for _ in dst.glob("*.py"))
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+
+    # Import lazily so the rest of build_corpora keeps working even
+    # if the workspace member is uninstalled.
+    from pychd_pyfuzz import Fuzzer
+
+    fuzzer = Fuzzer(target=(3, 14), seed=FUZZ_SYNTHETIC_SEED)
+    samples = fuzzer.generate_batch(FUZZ_SYNTHETIC_COUNT)
+    for sample in samples:
+        (dst / f"sample_{sample.index:04d}.py").write_text(sample.source)
+    return len(samples)
+
+
+def build_obf_variant(base_name: str, dst: Path, *, force: bool) -> int:
+    """Build an obfuscated mirror of an existing corpus.
+
+    For each ``.py`` under ``DEFAULT_ROOT / base_name`` (recursing
+    for nested packages), we:
+
+    1. compile it to a ``.pyc`` under the current interpreter,
+    2. anonymise the ``.pyc`` via ``pychd_pyobf.obfuscate``,
+    3. apply the same mapping to the original source text (so the
+       anonymised ``.py`` matches the anonymised ``.pyc``'s opcode
+       stream identifier-for-identifier),
+    4. drop the anonymised ``.py`` into *dst*.
+
+    The benchmarking harness then evaluates pychd against the
+    anonymised ``.py`` exactly as it would against any other corpus
+    file. Any sample that fails to compile / obfuscate is skipped
+    with a warning.
+    """
+    if dst.exists() and not force and any(dst.glob("*.py")):
+        return sum(1 for _ in dst.glob("*.py"))
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+
+    from pychd_pyobf import obfuscate
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from tools._obf_source import apply_mapping_to_source
+
+    base_dir = DEFAULT_ROOT / base_name
+    if not base_dir.exists():
+        print(
+            f"  {base_name}-obf: base corpus {base_dir} not built; skipping",
+            file=sys.stderr,
+        )
+        return 0
+
+    import py_compile
+    import tempfile
+
+    skipped = 0
+    written = 0
+    files = sorted(base_dir.rglob("*.py"))
+    files = [f for f in files if "_vendor" not in f.parts]
+    with tempfile.TemporaryDirectory(prefix="obf-build-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        for f in files:
+            try:
+                pyc_path = tmp / (f.stem + ".pyc")
+                py_compile.compile(str(f), cfile=str(pyc_path), doraise=True)
+                obf_pyc = tmp / (f.stem + ".obf.pyc")
+                report = obfuscate(pyc_path, obf_pyc)
+                anon = apply_mapping_to_source(f.read_text(), report.mapping)
+                # Flatten any package-nested name into a single
+                # filename (the corpus is glob-walked recursively but
+                # collisions are rare given pyfuzz/stdlib naming).
+                rel = f.relative_to(base_dir).as_posix().replace("/", "__")
+                (dst / rel).write_text(anon)
+                written += 1
+            except Exception as exc:  # noqa: BLE001
+                skipped += 1
+                logger_msg = (
+                    f"  {base_name}-obf: skip {f.name}: {exc.__class__.__name__}"
+                )
+                print(logger_msg, file=sys.stderr)
+    if skipped:
+        print(
+            f"  {base_name}-obf: skipped {skipped} sources that failed to "
+            "compile + obfuscate",
+            file=sys.stderr,
+        )
+    return written
+
+
+# ---------------------------------------------------------------------------
 # orchestration
 # ---------------------------------------------------------------------------
 
@@ -729,6 +843,30 @@ CORPORA = {
     "recent-pypi": (
         "Recent / niche PyPI packages (release_date proxy for low contamination)",
         build_recent_pypi,
+    ),
+    "fuzz-synthetic": (
+        "pyfuzz-generated random valid Python (guaranteed LLM-naïve)",
+        build_fuzz_synthetic,
+    ),
+    "stdlib-obf": (
+        "stdlib anonymised via pychd-pyobf — contamination differential",
+        lambda dst, *, force: build_obf_variant("stdlib", dst, force=force),
+    ),
+    "stdlib-full-obf": (
+        "stdlib-full anonymised via pychd-pyobf — contamination differential",
+        lambda dst, *, force: build_obf_variant("stdlib-full", dst, force=force),
+    ),
+    "pypi-obf": (
+        "pypi anonymised via pychd-pyobf — contamination differential",
+        lambda dst, *, force: build_obf_variant("pypi", dst, force=force),
+    ),
+    "pypi-top20-obf": (
+        "pypi-top20 anonymised via pychd-pyobf — contamination differential",
+        lambda dst, *, force: build_obf_variant("pypi-top20", dst, force=force),
+    ),
+    "humaneval-obf": (
+        "humaneval anonymised via pychd-pyobf — contamination differential",
+        lambda dst, *, force: build_obf_variant("humaneval", dst, force=force),
     ),
 }
 
@@ -778,6 +916,11 @@ def main(argv: list[str] | None = None) -> int:
             n = build_synthetic(dst, force=args.force)
         elif name == "recent-pypi":
             n = build_recent_pypi(dst, force=args.force)
+        elif name == "fuzz-synthetic":
+            n = build_fuzz_synthetic(dst, force=args.force)
+        elif name.endswith("-obf"):
+            base = name[: -len("-obf")]
+            n = build_obf_variant(base, dst, force=args.force)
         else:  # pragma: no cover
             n = builder(dst)  # type: ignore[call-arg]
         print(f"  -> {n} .py files at {dst}")

@@ -129,6 +129,25 @@ paper: setup bench-setup
     @echo "✅ paper regenerated. README §5.3 + assets/*.svg up to date."
     @echo "   Inspect changes with: git diff README.md assets/"
 
+# Run the contamination-free evaluation harness (pyfuzz → pyobf →
+# pychd) over N synthetic samples at the given target Python
+# version. Output is JSONL plus a stderr summary.
+eval-fuzz target="3.14" count="50" mode="rules-only":
+    uv run python tools/eval_fuzz.py \
+        --target {{ target }} --count {{ count }} \
+        --mode {{ mode }} \
+        --out /tmp/pychd-fuzz-eval/fuzz-{{ target }}-{{ mode }}.jsonl
+
+# Build every `<base>-obf` corpus from its raw counterpart so the
+# differential experiment has both halves on disk.
+bench-obf-corpora:
+    uv run python tools/build_corpora.py --only stdlib-obf
+    uv run python tools/build_corpora.py --only stdlib-full-obf
+    uv run python tools/build_corpora.py --only pypi-obf
+    uv run python tools/build_corpora.py --only pypi-top20-obf
+    uv run python tools/build_corpora.py --only humaneval-obf
+    uv run python tools/build_corpora.py --only fuzz-synthetic
+
 # Build wheels for every workspace member. Per-member output goes to
 # the root `dist/` directory.
 build-all:

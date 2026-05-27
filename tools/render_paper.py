@@ -60,6 +60,14 @@ from pychd.decompile import Backend, Mode  # noqa: E402
 from tools.benchmark import ModuleMetrics, measure_module  # noqa: E402
 
 CORPORA = [
+    # `fuzz-synthetic` is the strongest contamination guarantee in the
+    # repo: every sample is freshly generated via pychd-pyfuzz, never
+    # touches the network, and uses random identifiers, so no LLM
+    # could have memorised it.
+    (
+        "fuzz-synthetic",
+        "pyfuzz-generated random valid Python (guaranteed LLM-naïve)",
+    ),
     # recent-pypi is the contamination-aware corpus and includes the
     # cursor-sdk anchor package — keeping a separate cursor-sdk corpus
     # would double-count and obscure the recent-pypi balance.
@@ -76,10 +84,36 @@ CORPORA = [
         " see §LLM contamination disclosure)",
     ),
     ("stdlib", "Curated stdlib (10 modules)"),
+    # Each `*-obf` corpus is the matching raw corpus rewritten through
+    # pychd-pyobf: identical bytecode structure, identifiers /
+    # docstrings / strings replaced with `_n0`-style placeholders. The
+    # delta between raw and -obf for the same metric is the
+    # contamination signal (LLM scores higher when surface tokens
+    # match training data).
+    (
+        "stdlib-obf",
+        "stdlib anonymised via pychd-pyobf (contamination differential)",
+    ),
     ("stdlib-full", "Full Python 3.14 stdlib (single-file modules)"),
+    (
+        "stdlib-full-obf",
+        "stdlib-full anonymised via pychd-pyobf (contamination differential)",
+    ),
     ("pypi", "PyPI: requests, click, attrs, flask, httpx, rich"),
+    (
+        "pypi-obf",
+        "pypi anonymised via pychd-pyobf (contamination differential)",
+    ),
     ("pypi-top20", "PyPI top-20 pure-Python packages"),
+    (
+        "pypi-top20-obf",
+        "pypi-top20 anonymised via pychd-pyobf (contamination differential)",
+    ),
     ("humaneval", "OpenAI HumanEval (164 problems)"),
+    (
+        "humaneval-obf",
+        "humaneval anonymised via pychd-pyobf (contamination differential)",
+    ),
 ]
 
 
@@ -126,7 +160,18 @@ def _gather_corpus(
                     for row in payload
                 ]
     base = root / name
-    top_only = name in {"stdlib", "stdlib-full", "humaneval", "cursor-sdk"}
+    top_only = name in {
+        "stdlib",
+        "stdlib-full",
+        "humaneval",
+        "cursor-sdk",
+        "fuzz-synthetic",
+        "stdlib-obf",
+        "stdlib-full-obf",
+        "pypi-obf",
+        "pypi-top20-obf",
+        "humaneval-obf",
+    }
     files = sorted(base.glob("*.py")) if top_only else sorted(base.rglob("*.py"))
     files = [f for f in files if "_vendor" not in f.parts]
     rows: list[ModuleMetrics] = []
