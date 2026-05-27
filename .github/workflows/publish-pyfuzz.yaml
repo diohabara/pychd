@@ -47,6 +47,13 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    # ``continue-on-error: true`` keeps the workflow green for normal
+    # development pushes when the TestPyPI side does not yet have a
+    # Trusted Publisher registered for this workflow file. Once the
+    # `testpypi` environment is wired up on TestPyPI (README §Releasing),
+    # this dry-run will start exchanging tokens cleanly and you can
+    # drop the flag if you want strict failure semantics on dry-runs.
+    continue-on-error: true
     permissions:
       id-token: write
     environment: testpypi
